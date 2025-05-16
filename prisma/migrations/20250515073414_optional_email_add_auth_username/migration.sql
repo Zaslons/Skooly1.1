@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Auth" ALTER COLUMN "email" DROP NOT NULL;

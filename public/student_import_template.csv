@@ -1,0 +1,4 @@
+studentUsername,studentPassword,studentEmail,studentFirstName,studentLastName,studentAddress,studentBloodType,studentBirthday,studentSex,gradeLevel,className,parentUsername,parentPassword,parentEmail,parentPhone,parentFirstName,parentLastName,parentAddress
+koffis,password123,,Koffi,Sika,"10 Rue des Ecoles, Abidjan",O+,2017-03-10,MALE,CP1,CP1A,psika,parentpass1,,0102030405,Paul,Sika,"10 Rue des Ecoles, Abidjan"
+amoukou,password123,,Aisha,Moukou,"25 Avenue de la Liberte, Yamoussoukro",A-,2012-08-15,FEMALE,CM2,CM2A,mmoukou,parentpass2,,0607080910,Moussa,Moukou,"25 Avenue de la Liberte, Yamoussoukro"
+bdiop,password123,,Bakari,Diop,"5 Boulevard Giscard, Bouake",B+,2007-02-20,MALE,4eme,4A,adiop,parentpass3,,1112131415,Amina,Diop,"5 Boulevard Giscard, Bouake" 

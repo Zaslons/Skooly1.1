@@ -1,0 +1,655 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// NEW: School model acting as the Tenant
+model School {
+  id        String   @id @default(cuid()) // Use cuid for tenant ID
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // --- Relationships ---
+  auths               Auth[]
+  admins              Admin[]
+  teachers            Teacher[]
+  parents             Parent[]
+  students            Student[]
+  grades              Grade[]
+  classes             Class[]
+  subjects            Subject[] // Assuming Subject is per-school
+  lessons             Lesson[]
+  exams               Exam[]
+  assignments         Assignment[]
+  results             Result[]
+  attendances         Attendance[]
+  events              Event[]
+  announcements       Announcement[]
+  teacherAvailability TeacherAvailability[]
+
+  // NEW: Relation to SchoolSubscriptions
+  subscriptions SchoolSubscription[]
+
+  stripeCustomerId String? @unique // New field for Stripe Customer ID
+
+  // --- Academic Year Relations ---
+  academicYears        AcademicYear[] @relation("SchoolAcademicYears")
+  activeAcademicYearId String?        @unique
+  activeAcademicYear   AcademicYear?  @relation("ActiveSchoolYear", fields: [activeAcademicYearId], references: [id], onDelete: SetNull)
+
+  // --- Curriculum Relations ---
+  curricula Curriculum[]
+
+  scheduleChangeRequests ScheduleChangeRequest[]
+
+  // --- NEW: Relation to Rooms ---
+  rooms Room[] @relation("SchoolRooms")
+
+  @@index([name])
+}
+
+model Auth {
+  id        String   @id @default(cuid())
+  username  String   @unique // Added for login, primary identifier if email is null
+  email     String?  @unique // Made optional, but still unique if provided
+  password  String
+  role      String // "admin" (school admin), "teacher", "student", "parent", "system_admin"
+  schoolId  String? // Optional: Null for system_admin, required for other roles tied to a school
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  // Relations
+  admin   Admin?
+  teacher Teacher?
+  student Student?
+  parent  Parent?
+  school  School?  @relation(fields: [schoolId], references: [id]) // This relation is optional for system_admin
+
+  // NEW: SystemAdmin profile (optional, only if role is "system_admin")
+  systemAdmin SystemAdmin?
+
+  @@index([email])
+  @@index([role])
+}
+
+model Admin {
+  id       String  @id @default(cuid())
+  username String  @unique // This is Admin.username
+  name     String? // NEW: Admin's first name
+  surname  String? // NEW: Admin's last name
+  phone    String? // NEW: Admin's phone number
+  img      String? // NEW: Admin's profile image URL
+  authId   String  @unique
+  auth     Auth    @relation(fields: [authId], references: [id])
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+}
+
+model Student {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  name      String
+  surname   String
+  email     String?  @unique
+  phone     String?  @unique
+  address   String
+  img       String?
+  bloodType String
+  sex       UserSex
+  createdAt DateTime @default(now())
+  birthday  DateTime
+  authId    String   @unique
+  auth      Auth     @relation(fields: [authId], references: [id])
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  parentId String
+  parent   Parent @relation(fields: [parentId], references: [id])
+
+  // classId and gradeId now represent current enrollment, history is in StudentEnrollmentHistory
+  classId Int?
+  class   Class? @relation(fields: [classId], references: [id], onDelete: SetNull)
+
+  gradeId Int?
+  grade   Grade? @relation(fields: [gradeId], references: [id], onDelete: SetNull)
+
+  attendances Attendance[]
+  results     Result[]
+
+  // --- Enrollment History ---
+  enrollmentHistory StudentEnrollmentHistory[]
+}
+
+model Teacher {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  name      String
+  surname   String
+  email     String?  @unique
+  phone     String?  @unique
+  address   String
+  img       String?
+  bloodType String
+  sex       UserSex
+  createdAt DateTime @default(now())
+  birthday  DateTime
+  authId    String   @unique
+  auth      Auth     @relation(fields: [authId], references: [id])
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  subjects     Subject[]
+  lessons      Lesson[]
+  classes      Class[]
+  availability TeacherAvailability[]
+
+  requestedChanges ScheduleChangeRequest[] @relation("RequestedChanges")
+  proposedSwaps ScheduleChangeRequest[] @relation("ProposedSwaps")
+}
+
+model Parent {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  name      String
+  surname   String
+  email     String?  @unique
+  phone     String?
+  address   String
+  createdAt DateTime @default(now())
+  authId    String   @unique
+  auth      Auth     @relation(fields: [authId], references: [id])
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  students Student[]
+}
+
+model Grade {
+  id    Int    @id @default(autoincrement())
+  level String
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  students Student[]
+  classes  Class[]
+
+  // --- Curriculum Relation ---
+  curriculumSubjects Curriculum[]
+
+  @@unique([level, schoolId])
+}
+
+model Class {
+  id       Int    @id @default(autoincrement())
+  name     String
+  capacity Int
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Relation to Academic Year ---
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  supervisorId String?
+  supervisor   Teacher? @relation(fields: [supervisorId], references: [id])
+
+  lessons  Lesson[]
+  students Student[]
+
+  gradeId Int
+  grade   Grade @relation(fields: [gradeId], references: [id])
+
+  events        Event[]
+  announcements Announcement[]
+
+  // --- Enrollment History ---
+  enrollmentHistory StudentEnrollmentHistory[]
+
+  @@unique([name, schoolId, academicYearId])
+}
+
+model Subject {
+  id   Int    @id @default(autoincrement())
+  name String
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  teachers Teacher[]
+  lessons  Lesson[]
+
+  // --- Curriculum Relation ---
+  curriculumGrades Curriculum[]
+
+  @@unique([name, schoolId])
+}
+
+model Lesson {
+  id        Int      @id @default(autoincrement())
+  name      String
+  day       Day
+  startTime DateTime
+  endTime   DateTime
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // --- Other Relations ---
+  subjectId Int
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  classId Int
+  class   Class @relation(fields: [classId], references: [id])
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id])
+
+  // --- NEW: Relation to Physical Room ---
+  roomId    Int?     // Optional: The physical room where the lesson takes place
+  room      Room?    @relation("RoomLessons", fields: [roomId], references: [id], onDelete: SetNull)
+
+  exams       Exam[]
+  assignments Assignment[]
+  attendances Attendance[]
+
+  scheduleChangeRequests ScheduleChangeRequest[]
+}
+
+model Exam {
+  id        Int      @id @default(autoincrement())
+  title     String
+  startTime DateTime
+  endTime   DateTime
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+
+  // --- Other Relations ---
+  results Result[]
+
+  lessonId Int?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id])
+}
+
+model Assignment {
+  id        Int      @id @default(autoincrement())
+  title     String
+  dueDate   DateTime
+  startDate DateTime
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+
+  // --- Other Relations ---
+  results Result[]
+
+  lessonId Int?
+  lesson   Lesson? @relation(fields: [lessonId], references: [id])
+}
+
+model Result {
+  id             Int      @id @default(autoincrement())
+  score          Float
+  comments       String?
+  submissionDate DateTime @default(now())
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+
+  // --- Other Relations ---
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id])
+
+  examId Int?
+  exam   Exam? @relation(fields: [examId], references: [id])
+
+  assignmentId Int?
+  assignment   Assignment? @relation(fields: [assignmentId], references: [id])
+
+  @@index([studentId])
+  @@index([examId])
+  @@index([assignmentId])
+}
+
+model Attendance {
+  id     Int      @id @default(autoincrement())
+  date   DateTime
+  status String // e.g., Present, Absent, Late
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+
+  // --- Other Relations ---
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id])
+
+  lessonId Int
+  lesson   Lesson @relation(fields: [lessonId], references: [id])
+
+  @@index([studentId, date])
+}
+
+model Event {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String?
+  startTime   DateTime
+  endTime     DateTime
+
+  // --- Relation to School --
+  schoolId    String
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // Relation to Class (optional, an event might be for a specific class or school-wide)
+  classId     Int?
+  class       Class?   @relation(fields: [classId], references: [id], onDelete: Cascade) // Or SetNull if event can exist without class
+
+  // --- NEW: Relation to Physical Room ---
+  roomId      Int?     // Optional: The physical room where the event takes place
+  room        Room?    @relation("RoomEvents", fields: [roomId], references: [id], onDelete: SetNull)
+
+  // Add any other relevant fields for events
+  // e.g., eventType (Meeting, Holiday, Sports, etc.)
+
+}
+
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+
+  // --- Relation to School ---
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+
+  // --- Other Relations ---
+  classId Int?
+  class   Class? @relation(fields: [classId], references: [id]) // Optional: for class-specific announcements
+}
+
+model SystemAdmin {
+  id     String  @id @default(cuid())
+  authId String  @unique
+  auth   Auth    @relation(fields: [authId], references: [id])
+  name   String?
+}
+
+model SubscriptionPlan {
+  id                String               @id @default(cuid())
+  name              String               @unique
+  price             Float
+  currency          String
+  billingCycle      BillingCycle // MONTHLY or YEARLY
+  stripePriceId     String               @unique // Stripe Price ID
+  features          String[] // List of features
+  maxStudents       Int? // Added field
+  maxTeachers       Int? // Added field
+  isActive          Boolean              @default(true)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  SchoolSubcription SchoolSubscription[]
+}
+
+model SchoolSubscription {
+  id                   String             @id @default(cuid())
+  schoolId             String
+  school               School             @relation(fields: [schoolId], references: [id])
+  subscriptionPlanId   String
+  subscriptionPlan     SubscriptionPlan   @relation(fields: [subscriptionPlanId], references: [id])
+  stripeSubscriptionId String             @unique // Stripe Subscription ID
+  status               SubscriptionStatus // ACTIVE, CANCELED, PAST_DUE, etc.
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  endDate              DateTime? // Added field
+  nextBillingDate      DateTime? // Added field
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@index([schoolId])
+  @@index([stripeSubscriptionId])
+}
+
+// ++++++++++++++++++++++++++++++++++++++
+// NEW MODELS START HERE
+// ++++++++++++++++++++++++++++++++++++++
+
+model AcademicYear {
+  id         String   @id @default(cuid())
+  schoolId   String
+  school     School   @relation("SchoolAcademicYears", fields: [schoolId], references: [id], onDelete: Cascade)
+  name       String // e.g., "2023-2024", "First Semester 2024"
+  startDate  DateTime
+  endDate    DateTime
+  isActive   Boolean  @default(false) // Is this the currently active year for operations?
+  isArchived Boolean  @default(false) // Is this year concluded and data archived?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relation to the school that has this as its active year (if any)
+  activeForSchool School? @relation("ActiveSchoolYear")
+
+  // Relationships to entities scoped by this academic year
+  classes           Class[]
+  curricula         Curriculum[]
+  enrollmentHistory StudentEnrollmentHistory[]
+  // lessons        Lesson[]      // Lessons are tied via Class
+  // exams          Exam[]        // Exams could be tied here if they are year-wide and not class/lesson specific
+  // assignments    Assignment[]  // Similar to exams
+  // ... other models as needed
+
+  @@unique([schoolId, name])
+  @@index([schoolId, isActive])
+}
+
+model Curriculum {
+  id             String       @id @default(cuid())
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  gradeId Int
+  grade   Grade @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+
+  subjectId Int
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  schoolId String // Denormalized from AcademicYear for easier querying/constraints
+  school   School @relation(fields: [schoolId], references: [id], onDelete: NoAction) // Avoid multiple cascade paths
+
+  description String? // Syllabus outline, learning objectives, etc.
+  textbook    String?
+  // teacherId   String?       // Optionally, assign a lead teacher for this subject in this grade/year
+  // teacher     Teacher?      @relation(fields: [teacherId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([academicYearId, gradeId, subjectId]) // Ensures a subject is added only once to a grade's curriculum per year
+  @@index([schoolId])
+  @@index([academicYearId])
+  @@index([gradeId])
+  @@index([subjectId])
+}
+
+model StudentEnrollmentHistory {
+  id        String  @id @default(cuid())
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  classId Int
+  class   Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  // Denormalized from Class for easier querying, ensure it's consistent with Class.academicYearId
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  enrollmentDate DateTime  @default(now())
+  departureDate  DateTime? // Null if currently enrolled in this class/year
+  // status      EnrollmentStatus? // e.g., ENROLLED, PROMOTED, REPEATED, WITHDRAWN (requires enum)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, classId])
+  @@index([studentId])
+  @@index([classId])
+  @@index([academicYearId])
+}
+
+// enum EnrollmentStatus {
+//   ENROLLED
+//   PROMOTED
+//   REPEATED
+//   WITHDRAWN
+//   COMPLETED
+// }
+
+// ++++++++++++++++++++++++++++++++++++++
+// NEW MODELS END HERE
+// ++++++++++++++++++++++++++++++++++++++
+
+enum UserSex {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum Day {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  INCOMPLETE // For subscriptions that require action, like 3D Secure
+  INCOMPLETE_EXPIRED
+  TRIALING
+  UNPAID
+}
+
+model TeacherAvailability {
+  id          String   @id @default(cuid())
+  dayOfWeek   Day      // MONDAY, TUESDAY, etc.
+  startTime   DateTime // Store as full DateTime, but only time part is relevant for daily availability
+  endTime     DateTime // Store as full DateTime, but only time part is relevant for daily availability
+  isAvailable Boolean  // True if available, False if this is a blocked/unavailable slot
+  notes       String?  @db.Text
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teacherId, dayOfWeek, startTime, schoolId]) // Ensure unique slot per teacher, day, time, school
+  @@index([teacherId])
+  @@index([schoolId])
+}
+
+// NEW Enums for ScheduleChangeRequest
+enum ScheduleChangeType {
+  TIME_CHANGE
+  SWAP
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+// NEW Model for ScheduleChangeRequest
+model ScheduleChangeRequest {
+  id                  String             @id @default(cuid())
+  requestingTeacherId String
+  requestingTeacher   Teacher            @relation("RequestedChanges", fields: [requestingTeacherId], references: [id], onDelete: Cascade)
+  lessonId            Int
+  lesson              Lesson             @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  requestedChangeType ScheduleChangeType
+  proposedStartTime   DateTime?          // For TIME_CHANGE
+  proposedEndTime     DateTime?          // For TIME_CHANGE
+  proposedDay         Day?               // For TIME_CHANGE, uses existing Day enum
+  proposedSwapTeacherId String?            // For SWAP
+  proposedSwapTeacher Teacher?           @relation("ProposedSwaps", fields: [proposedSwapTeacherId], references: [id], onDelete: NoAction, onUpdate: NoAction) // Nullable, NoAction to avoid cycles on delete
+  reason              String             @db.Text
+  status              RequestStatus      @default(PENDING)
+  adminNotes          String?            @db.Text
+
+  schoolId            String
+  school              School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([requestingTeacherId])
+  @@index([lessonId])
+  @@index([proposedSwapTeacherId])
+  @@index([schoolId])
+  @@index([status])
+}
+
+// --- NEW: Physical Room/Venue Model ---
+model Room {
+  id          Int     @id @default(autoincrement())
+  name        String  // e.g., "Computer Lab A", "Science Lab 1", "Library Section B"
+  type        String? // e.g., "Lab", "Standard Classroom", "Auditorium", "Gym"
+  capacity    Int?    // Max number of occupants
+  description String? // Any other relevant details (e.g., "Has 20 PCs", "Projector available")
+  schoolId    String
+  school      School  @relation("SchoolRooms", fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  lessons     Lesson[] @relation("RoomLessons") // All lessons scheduled in this room
+  events      Event[]  @relation("RoomEvents")  // All events scheduled in this room
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name, schoolId]) // Room names should be unique within a school
+}
