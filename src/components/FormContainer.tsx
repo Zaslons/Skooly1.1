@@ -12,6 +12,7 @@ export type FormContainerProps = {
     | "subject"
     | "class"
     | "lesson"
+    | "examTemplate"
     | "exam"
     | "assignment"
     | "result"

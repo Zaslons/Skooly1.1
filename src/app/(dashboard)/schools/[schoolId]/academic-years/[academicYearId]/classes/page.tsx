@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import prisma from '@/lib/prisma';
-import { getCurrentUserOnPage } from '@/lib/auth'; // Assuming this helper exists
+import { getServerUser } from '@/lib/auth';
 // import { Badge } from '@/components/ui/badge'; // Temporarily removed
 // import { Button as ShadButton } from '@/components/ui/button'; // Temporarily removed
 
@@ -15,7 +15,7 @@ interface ClassesForAcademicYearPageProps {
 export default async function ClassesForAcademicYearPage({ params }: ClassesForAcademicYearPageProps) {
   const { schoolId, academicYearId } = params;
 
-  const user = await getCurrentUserOnPage();
+  const user = await getServerUser();
   if (!user) {
     redirect('/sign-in');
   }

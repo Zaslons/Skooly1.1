@@ -1,5 +1,12 @@
 # Skooly - School Management Dashboard
 
+A multi-tenant school management SaaS platform built with Next.js 14, Prisma, PostgreSQL, and Stripe.
+
+## Documentation
+
+- [System Design Analysis](SYSTEM_DESIGN.md) - Architecture, domain model, auth flow, and diagrams
+- [Ecosystem Roadmap](ECOSYSTEM_ROADMAP.md) - Planned features and development roadmap
+
 ## Getting Started
 
 First, run the development server:

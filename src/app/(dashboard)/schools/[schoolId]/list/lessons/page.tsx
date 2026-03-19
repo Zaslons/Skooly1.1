@@ -39,7 +39,7 @@ const [subjects, teachers, classes] = await Promise.all([
     include: { subjects: { select: { id: true } } }, // Include subject IDs for filtering
     orderBy: [{ surname: 'asc' }, { name: 'asc' }],
   }),
-  prisma.class.findMany({ where: { schoolId }, orderBy: { name: 'asc' } })
+  prisma.class.findMany({ where: { schoolId, academicYear: { isArchived: false } }, orderBy: { name: 'asc' } })
 ]);
 
 const columns = [

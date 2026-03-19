@@ -100,9 +100,9 @@ export default async function AdminAttendancePage({
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        record.status === "Present" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                        record.status === "PRESENT" ? "bg-green-100 text-green-800" : record.status === "LATE" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800"
                       }`}>
-                        {record.status}
+                        {record.status === "PRESENT" ? "Present" : record.status === "LATE" ? "Late" : "Absent"}
                       </span>
                     </td>
                   </tr>

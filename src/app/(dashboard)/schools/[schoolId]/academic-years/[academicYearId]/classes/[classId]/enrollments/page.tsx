@@ -1,16 +1,8 @@
 import prisma from '@/lib/prisma';
-import { cookies } from 'next/headers';
-import { verifyToken, AuthUser } from '@/lib/auth';
+import { getServerUser } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 import EnrollmentsClient from './EnrollmentsClient'; // To be created
 import { AcademicYear, Class, Student, StudentEnrollmentHistory } from '@prisma/client';
-
-// Helper to get current authenticated user (consistent with other pages)
-async function getCurrentUserOnPage(): Promise<AuthUser | null> {
-  const tokenCookie = cookies().get('auth_token');
-  if (!tokenCookie) return null;
-  return verifyToken(tokenCookie.value);
-}
 
 export type EnrolledStudentWithDetails = StudentEnrollmentHistory & {
   student: Pick<Student, 'id' | 'name' | 'surname' | 'email'>; // Changed to name, surname
@@ -42,7 +34,7 @@ export default async function EnrollmentsPage({ params }: EnrollmentsPageProps) 
   }
 
   // Authentication
-  const currentUser = await getCurrentUserOnPage();
+  const currentUser = await getServerUser();
   if (!currentUser) {
     redirect(`/sign-in?callbackUrl=/schools/${schoolId}/academic-years/${academicYearId}/classes/${classIdInt}/enrollments`);
   }

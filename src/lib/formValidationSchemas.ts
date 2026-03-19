@@ -96,9 +96,33 @@ export const examSchema = z.object({
   startTime: z.coerce.date({ message: "Start time is required!" }),
   endTime: z.coerce.date({ message: "End time is required!" }),
   lessonId: z.coerce.number({ message: "Lesson is required!" }),
+  maxScore: z.coerce.number().min(1, { message: "Max score must be at least 1" }).default(100),
+  weight: z.coerce.number().min(0.1, { message: "Weight must be at least 0.1" }).default(1.0),
 });
 
 export type ExamSchema = z.infer<typeof examSchema>;
+
+// Weekly exam template (Phase 2/5)
+export const examTemplateSchema = z.object({
+  id: z.string().cuid().optional(),
+  termId: z.string().cuid({ message: "Valid term ID is required." }),
+
+  title: z.string().min(1).optional().nullable(),
+
+  day: z.nativeEnum(Day, {
+    errorMap: () => ({ message: "Please select a valid day." })
+  }),
+  startTime: z.coerce.date({ message: "Start time is required!" }),
+  endTime: z.coerce.date({ message: "End time is required!" }),
+
+  classId: z.coerce.number({ message: "Class is required!" }),
+  subjectId: z.coerce.number({ message: "Subject is required!" }),
+
+  teacherId: z.string().cuid().optional().nullable(),
+  roomId: z.coerce.number().optional().nullable(),
+});
+
+export type ExamTemplateSchema = z.infer<typeof examTemplateSchema>;
 
 export const lessonSchema = z.object({
   id: z.coerce.number().optional(),
@@ -122,6 +146,8 @@ export const assignmentSchema = z.object({
   startDate: z.coerce.date({ message: "Start date is required!" }),
   dueDate: z.coerce.date({ message: "Due date is required!" }),
   lessonId: z.coerce.number({ message: "Lesson is required!" }),
+  maxScore: z.coerce.number().min(1, { message: "Max score must be at least 1" }).default(100),
+  weight: z.coerce.number().min(0.1, { message: "Weight must be at least 0.1" }).default(1.0),
 });
 
 export type AssignmentSchema = z.infer<typeof assignmentSchema>;
@@ -193,7 +219,7 @@ export const attendanceSchema = z.object({
   studentAttendance: z.array(
     z.object({
       studentId: z.string(),
-      status: z.enum(["Present", "Absent", "Late"]),
+      status: z.enum(["PRESENT", "ABSENT", "LATE"]),
     })
   ),
 });
@@ -253,10 +279,6 @@ export const adminSchema = z.object({
 }, {
   message: "Passwords do not match.",
   path: ["confirmPassword"],
-});
-
-export const schoolSchema = z.object({
-  // ... existing code ...
 });
 
 // NEW Enums for Zod (matching Prisma enums)

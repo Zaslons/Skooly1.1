@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import type { AuthUser } from '@/lib/auth';
-import prisma from '@/lib/prisma'; // Import Prisma client
+import prisma from '@/lib/prisma';
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get('auth_token')?.value;
@@ -11,56 +11,59 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const decodedUser = await verifyToken(token); // This is the raw payload from JWT
+    const decodedUser = await verifyToken(token);
     if (!decodedUser) {
-      // This case might happen if the token is malformed or the secret is wrong
-      // or if verifyToken itself has an issue.
-      // Delete the invalid cookie
       const response = NextResponse.json({ error: 'Invalid token' }, { status: 401 });
       response.cookies.delete('auth_token');
       return response;
     }
 
-    // Construct the base AuthUser object
-    let authUser: AuthUser = {
-        id: decodedUser.id,
-        schoolId: decodedUser.schoolId, // This can be string | null | undefined
-        username: decodedUser.username,
-        email: decodedUser.email,
-        role: decodedUser.role,
+    const authUser: AuthUser = {
+      id: decodedUser.id,
+      schoolId: decodedUser.schoolId,
+      username: decodedUser.username,
+      email: decodedUser.email,
+      role: decodedUser.role,
+      profileId: decodedUser.profileId,
+      accountType: decodedUser.accountType,
+      membershipId: decodedUser.membershipId,
     };
 
-    // Only attempt to fetch profileId if schoolId exists and role is teacher or student
-    if (authUser.schoolId && typeof authUser.schoolId === 'string') {
+    if (authUser.schoolId && typeof authUser.schoolId === 'string' && !authUser.profileId) {
       if (authUser.role === 'teacher') {
-        const teacherProfile = await prisma.teacher.findUnique({
-          where: { authId: authUser.id, schoolId: authUser.schoolId }, // authUser.schoolId is a string here
+        const teacherProfile = await prisma.teacher.findFirst({
+          where: { authId: authUser.id, schoolId: authUser.schoolId },
           select: { id: true },
         });
-        if (teacherProfile) {
-          authUser.profileId = teacherProfile.id;
-        }
+        if (teacherProfile) authUser.profileId = teacherProfile.id;
       } else if (authUser.role === 'student') {
-        const studentProfile = await prisma.student.findUnique({
-          where: { authId: authUser.id, schoolId: authUser.schoolId }, // authUser.schoolId is a string here
+        const studentProfile = await prisma.student.findFirst({
+          where: { authId: authUser.id, schoolId: authUser.schoolId },
           select: { id: true },
         });
-        if (studentProfile) {
-          authUser.profileId = studentProfile.id;
-        }
-      }
-    } else {
-      if (authUser.role === 'teacher' || authUser.role === 'student') {
-        console.warn(`[API /auth/me] User ${authUser.id} (${authUser.role}) has no valid schoolId in token. Cannot fetch profileId.`);
+        if (studentProfile) authUser.profileId = studentProfile.id;
       }
     }
 
-    return NextResponse.json(authUser);
+    const memberships = await prisma.schoolMembership.findMany({
+      where: { authId: authUser.id, isActive: true },
+      include: { school: { select: { name: true } } },
+    });
+
+    return NextResponse.json({
+      ...authUser,
+      memberships: memberships.map(m => ({
+        id: m.id,
+        schoolId: m.schoolId,
+        schoolName: m.school.name,
+        role: m.role,
+        isActive: m.isActive,
+      })),
+    });
   } catch (error) {
-    // This catches errors during token verification, e.g., signature failure
-    console.error('[API /auth/me] Error processing token or fetching profile:', error);
+    console.error('[API /auth/me] Error:', error);
     const response = NextResponse.json({ error: 'Token processing failed' }, { status: 401 });
     response.cookies.delete('auth_token');
     return response;
   }
-} 
+}

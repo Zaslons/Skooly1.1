@@ -16,6 +16,7 @@ type ResultList = {
   teacherName: string;
   teacherSurname: string;
   score: number;
+  maxScore: number;
   className: string;
   startTime: Date;
 };
@@ -87,7 +88,12 @@ const renderRow = (item: ResultList | null) => {
     >
       <td className="flex items-center gap-4 p-4">{item.title}</td>
       <td>{item.studentName + " " + item.studentSurname}</td>
-      <td className="hidden md:table-cell">{item.score}</td>
+      <td className="hidden md:table-cell">
+        <span className="font-medium">{item.score}/{item.maxScore}</span>
+        <span className="text-xs text-gray-400 ml-1">
+          ({Math.round((item.score / item.maxScore) * 100)}%)
+        </span>
+      </td>
       <td className="hidden md:table-cell">
         {item.teacherName + " " + item.teacherSurname}
       </td>
@@ -237,6 +243,7 @@ const renderRow = (item: ResultList | null) => {
       teacherName: assessment.lesson.teacher.name,
       teacherSurname: assessment.lesson.teacher.surname,
       score: item.score,
+      maxScore: (assessment as any).maxScore ?? 100,
       className: assessment.lesson.class.name,
       startTime: isExam && item.exam?.startTime ? item.exam.startTime : (item.assignment?.startDate || new Date()),
       relatedData: {}

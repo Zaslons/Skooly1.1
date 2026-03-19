@@ -1,610 +1,619 @@
-import { Day, PrismaClient, UserSex, BillingCycle, SubscriptionStatus } from "@prisma/client";
+import {
+  Day,
+  PrismaClient,
+  UserSex,
+  BillingCycle,
+  SubscriptionStatus,
+  AttendanceStatus,
+  AccountType,
+  EnrollmentStatus,
+  JoinCodeType,
+} from "@prisma/client";
 import bcrypt from "bcryptjs";
+
 const prisma = new PrismaClient();
 
+const COMMON_PASSWORD = "Password123!";
+
+function randomFrom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randomInt(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomScore(maxScore: number): number {
+  const base = maxScore * 0.3;
+  return Math.round((base + Math.random() * (maxScore - base)) * 100) / 100;
+}
+
+const FIRST_NAMES_M = ["James", "Noah", "Liam", "Oliver", "Ethan", "Lucas", "Mason", "Logan", "Jack", "Aiden", "Leo", "Samuel", "Henry", "Benjamin", "Daniel", "Matthew", "David", "Joseph", "Carter", "Owen"];
+const FIRST_NAMES_F = ["Emma", "Olivia", "Ava", "Sophia", "Mia", "Isabella", "Charlotte", "Amelia", "Harper", "Evelyn", "Luna", "Ella", "Grace", "Chloe", "Lily", "Aria", "Zoey", "Layla", "Nora", "Riley"];
+const LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Wilson", "Anderson", "Taylor", "Thomas", "Jackson", "White", "Harris", "Martin", "Clark", "Lewis"];
+
+function randomName(sex: UserSex) {
+  const first = sex === UserSex.MALE ? randomFrom(FIRST_NAMES_M) : randomFrom(FIRST_NAMES_F);
+  const last = randomFrom(LAST_NAMES);
+  return { first, last };
+}
+
 async function main() {
-  console.log(`Start seeding ...`);
+  console.log("Start seeding ...\n");
 
-  // Seed System Admin
-  const systemAdminUsername = process.env.SYSTEM_ADMIN_USERNAME || 'sysadmin';
-  const systemAdminEmail = process.env.SYSTEM_ADMIN_EMAIL || 'sysadmin@example.com';
-  const systemAdminPassword = process.env.SYSTEM_ADMIN_PASSWORD || 'StrongPassword123!';
-  const hashedSystemAdminPassword = await bcrypt.hash(systemAdminPassword, 10);
+  const hashedPassword = await bcrypt.hash(COMMON_PASSWORD, 10);
 
-  let sysAdminAuth = await prisma.auth.findUnique({
-    where: { username: systemAdminUsername },
-    include: { systemAdmin: true }, // Include to check if profile exists
-  });
-
+  // ─── SYSTEM ADMIN ────────────────────────────
+  let sysAdminAuth = await prisma.auth.findUnique({ where: { username: "sysadmin" } });
   if (!sysAdminAuth) {
     sysAdminAuth = await prisma.auth.create({
       data: {
-        username: systemAdminUsername,
-        email: systemAdminEmail, // Ensure this is unique or handle potential conflicts
-        password: hashedSystemAdminPassword,
-        role: 'system_admin',
-        schoolId: null, // System admin is not tied to a specific school
-        systemAdmin: {
-          create: {
-            name: 'System Administrator',
-          },
-        },
-      },
-      include: {
-        systemAdmin: true,
+        username: "sysadmin",
+        email: "sysadmin@skooly.com",
+        password: hashedPassword,
+        role: "system_admin",
+        accountType: AccountType.SYSTEM_ADMIN,
+        schoolId: null,
+        systemAdmin: { create: { name: "System Administrator" } },
       },
     });
-    console.log('Created system admin:', sysAdminAuth.username, sysAdminAuth.email);
-  } else {
-    console.log('System admin already exists:', sysAdminAuth.username);
-    // Ensure the SystemAdmin profile exists if Auth record was found but profile wasn't linked
-    if (!sysAdminAuth.systemAdmin) {
-      await prisma.systemAdmin.upsert({
-        where: { authId: sysAdminAuth.id },
-        update: {
-          name: 'System Administrator (Profile Updated)',
-        },
-        create: {
-          authId: sysAdminAuth.id,
-          name: 'System Administrator',
-        },
-      });
-      console.log(`Ensured SystemAdmin profile exists for ${sysAdminAuth.username}`);
-    }
+    console.log("Created system admin: sysadmin");
   }
 
-  // Example: Seed some Subscription Plans
-  const plansToSeed = [
-    {
-      name: 'Basic Monthly',
-      price: 10.00,
-      currency: 'USD',
-      billingCycle: BillingCycle.MONTHLY,
-      stripePriceId: 'price_basic_monthly_placeholder',
-      features: ['Up to 50 students', 'Up to 5 teachers', 'Basic support'],
-      isActive: true,
-    },
-    {
-      name: 'Premium Yearly',
-      price: 1000.00,
-      currency: 'USD',
-      billingCycle: BillingCycle.YEARLY,
-      stripePriceId: 'price_premium_yearly_placeholder',
-      features: ['Unlimited students', 'Unlimited teachers', 'Priority support', 'Advanced reporting'],
-      isActive: true,
-    },
-    {
-      name: 'Free Trial',
-      price: 0.00,
-      currency: 'USD',
-      billingCycle: BillingCycle.MONTHLY,
-      stripePriceId: 'price_free_trial_placeholder',
-      features: ['Full access for 14 days', 'Up to 10 students'],
-      isActive: true,
-    },
+  // ─── SUBSCRIPTION PLANS ──────────────────────
+  const plans = [
+    { name: "Free Trial", price: 0, currency: "USD", billingCycle: BillingCycle.MONTHLY, stripePriceId: "price_free_trial", features: ["Full access for 14 days", "Up to 10 students"], isActive: true },
+    { name: "Basic Monthly", price: 10, currency: "USD", billingCycle: BillingCycle.MONTHLY, stripePriceId: "price_basic_monthly", features: ["Up to 50 students", "Up to 5 teachers", "Basic support"], isActive: true },
+    { name: "Premium Yearly", price: 1000, currency: "USD", billingCycle: BillingCycle.YEARLY, stripePriceId: "price_premium_yearly", features: ["Unlimited students", "Unlimited teachers", "Priority support", "Advanced reporting"], isActive: true },
   ];
-
-  for (const planData of plansToSeed) {
-    const plan = await prisma.subscriptionPlan.upsert({
-      where: { name: planData.name },
-      update: { ...planData },
-      create: { ...planData },
-    });
-    console.log(`Upserted subscription plan: ${plan.name}`);
+  for (const p of plans) {
+    await prisma.subscriptionPlan.upsert({ where: { name: p.name }, update: p, create: p });
   }
+  console.log("Upserted subscription plans\n");
 
-  // --- Create a default School first ---
-  const school1 = await prisma.school.create({
-    data: {
-      name: "Default Seed School",
-    },
+  // ─── SCHOOL ──────────────────────────────────
+  const school = await prisma.school.create({
+    data: { name: "Springfield Academy" },
   });
-  console.log(`Created school with id: ${school1.id}`);
+  console.log(`Created school: ${school.name} (${school.id})`);
 
-  // --- Create a default AcademicYear for the School ---
+  // ─── ACADEMIC YEAR ───────────────────────────
   const currentYear = new Date().getFullYear();
   const academicYear = await prisma.academicYear.create({
     data: {
       name: `${currentYear}-${currentYear + 1}`,
       startDate: new Date(`${currentYear}-09-01`),
       endDate: new Date(`${currentYear + 1}-06-30`),
-      schoolId: school1.id,
-      isActive: true, // Set this as the active year for the school
+      schoolId: school.id,
+      isActive: true,
     },
   });
-  console.log(`Created academic year: ${academicYear.name} for school ${school1.id}`);
+  await prisma.school.update({ where: { id: school.id }, data: { activeAcademicYearId: academicYear.id } });
+  console.log(`Created academic year: ${academicYear.name}\n`);
 
-  // Update school to set this as the active academic year
-  await prisma.school.update({
-    where: { id: school1.id },
-    data: { activeAcademicYearId: academicYear.id },
-  });
-  console.log(`Set ${academicYear.name} as active for school ${school1.id}`);
-
-  // ADMIN (example for 2 admins)
-  for (let i = 1; i <= 2; i++) {
-    const adminUsername = `admin${i}`;
-    const adminEmail = `admin${i}@example.com`;
-
-    let auth = await prisma.auth.findUnique({
-      where: { username: adminUsername },
-    });
-
-    if (auth) {
-      console.log(`Auth for admin ${adminUsername} already exists. Checking/creating Admin profile.`);
-      let adminProfile = await prisma.admin.findUnique({ where: { username: adminUsername } });
-      if (!adminProfile) {
-        adminProfile = await prisma.admin.create({
-          data: {
-            id: adminUsername, // Assuming id can be the same as username for simplicity here
-            username: adminUsername,
-            schoolId: school1.id,
-            authId: auth.id,
-            name: `Admin${i}Name`, // Added placeholder name
-            surname: `Admin${i}Surname`, // Added placeholder surname
-          },
-        });
-        console.log(`Created Admin profile for ${adminUsername}`);
-      } else {
-        console.log(`Admin profile for ${adminUsername} already exists.`);
-      }
-      continue;
-    }
-
-    const password = await bcrypt.hash(`admin${i}pass`, 10);
-    auth = await prisma.auth.create({
-      data: {
-        username: adminUsername,
-        email: adminEmail,
-        password,
-        role: "admin",
-        schoolId: school1.id,
-      },
-    });
-    await prisma.admin.create({
-      data: {
-        id: adminUsername, // Assuming id can be the same as username
-        username: adminUsername,
-        schoolId: school1.id,
-        authId: auth.id,
-        name: `Admin${i}Name`, // Added placeholder name
-        surname: `Admin${i}Surname`, // Added placeholder surname
-      },
-    });
-    console.log(`Created admin and auth: ${adminUsername}`);
-  }
-
-  // GRADE
+  // ─── GRADES (1-6) ───────────────────────────
+  const grades = [];
   for (let i = 1; i <= 6; i++) {
-    await prisma.grade.create({
-      data: {
-        level: i.toString(),
-        schoolId: school1.id,
-      },
-    });
+    const g = await prisma.grade.create({ data: { level: i.toString(), schoolId: school.id } });
+    grades.push(g);
   }
-  console.log("Created grades");
+  console.log(`Created ${grades.length} grades`);
 
-  // CLASS
-  const grades = await prisma.grade.findMany({ where: { schoolId: school1.id }});
-  for (let i = 1; i <= 6; i++) {
-    const gradeForClass = grades.find(g => g.level === i.toString());
-    if (gradeForClass) {
-    await prisma.class.create({
-      data: {
-        name: `${i}A`, 
-          gradeId: gradeForClass.id, 
-        capacity: Math.floor(Math.random() * (20 - 15 + 1)) + 15,
-        schoolId: school1.id,
+  // ─── CLASSES (2 per grade = 12 classes) ──────
+  const classes = [];
+  for (const grade of grades) {
+    for (const section of ["A", "B"]) {
+      const cls = await prisma.class.create({
+        data: {
+          name: `${grade.level}${section}`,
+          capacity: randomInt(20, 30),
+          gradeId: grade.id,
+          schoolId: school.id,
           academicYearId: academicYear.id,
-      },
-    });
+        },
+      });
+      classes.push(cls);
+    }
   }
-  }
-  console.log("Created classes");
+  console.log(`Created ${classes.length} classes`);
 
-  // SUBJECT
-  const subjectData = [
-    { name: "Mathematics" },
-    { name: "Science" },
-    { name: "English" },
-    { name: "History" },
-    { name: "Geography" },
-    { name: "Physics" },
-    { name: "Chemistry" },
-    { name: "Biology" },
-    { name: "Computer Science" },
-    { name: "Art" },
+  // ─── SUBJECTS ────────────────────────────────
+  const subjectNames = ["Mathematics", "Science", "English", "History", "Geography", "Physics", "Chemistry", "Biology", "Computer Science", "Art", "Physical Education", "Music"];
+  const subjects = [];
+  for (const name of subjectNames) {
+    const s = await prisma.subject.create({ data: { name, schoolId: school.id } });
+    subjects.push(s);
+  }
+  console.log(`Created ${subjects.length} subjects`);
+
+  // ─── ROOMS ───────────────────────────────────
+  const roomData = [
+    { name: "Room 101", type: "Classroom" },
+    { name: "Room 102", type: "Classroom" },
+    { name: "Room 103", type: "Classroom" },
+    { name: "Room 104", type: "Classroom" },
+    { name: "Room 105", type: "Classroom" },
+    { name: "Room 106", type: "Classroom" },
+    { name: "Science Lab", type: "Lab", capacity: 25 },
+    { name: "Computer Lab", type: "Lab", capacity: 30 },
+    { name: "Art Studio", type: "Studio", capacity: 20 },
+    { name: "Gymnasium", type: "Gym", capacity: 60 },
+    { name: "Music Room", type: "Studio", capacity: 25 },
+    { name: "Library", type: "Library", capacity: 40 },
   ];
-
-  for (const subject of subjectData) {
-    await prisma.subject.create({
-      data: {
-        ...subject,
-        schoolId: school1.id,
-      }
+  const rooms = [];
+  for (const r of roomData) {
+    const room = await prisma.room.create({
+      data: { name: r.name, type: r.type, capacity: r.capacity ?? 30, schoolId: school.id },
     });
+    rooms.push(room);
   }
+  console.log(`Created ${rooms.length} rooms`);
 
-  // TEACHER
-  const schoolSubjects = await prisma.subject.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true },
-  });
-  const schoolSubjectIds = schoolSubjects.map(s => s.id);
-
-  const schoolClasses = await prisma.class.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true },
-  });
-  const schoolClassIds = schoolClasses.map(c => c.id);
-
-  for (let i = 1; i <= 15; i++) {
-    const teacherUsername = `teacher${i}`;
-    const teacherEmail = `teacher${i}@example.com`;
-
-    let auth = await prisma.auth.findUnique({
-      where: { username: teacherUsername },
-    });
-
-    const connectSubjectId = schoolSubjectIds[i % schoolSubjectIds.length];
-    const connectClassId = schoolClassIds[i % schoolClassIds.length];
-
-    if (auth) {
-      console.log(`Auth for teacher ${teacherUsername} already exists. Checking/creating Teacher profile.`);
-      let teacherProfile = await prisma.teacher.findUnique({ where: { username: teacherUsername }});
-      if (!teacherProfile) {
-        await prisma.teacher.create({
-          data: {
-            id: teacherUsername,
-            username: teacherUsername,
-            name: `TName${i}`,
-            surname: `TSurname${i}`,
-            email: teacherEmail,
-            phone: `123-456-789${i}`,
-            address: `Address${i}`,
-            bloodType: "A+",
-            sex: i % 2 === 0 ? UserSex.MALE : UserSex.FEMALE,
-            birthday: new Date(new Date().setFullYear(new Date().getFullYear() - 30)),
-            schoolId: school1.id,
-            subjects: { connect: [{ id: connectSubjectId }] },
-            classes: { connect: [{ id: connectClassId }] },
-            authId: auth.id,
-          },
-        });
-        console.log(`Created Teacher profile for ${teacherUsername}`);
-      } else {
-         console.log(`Teacher profile for ${teacherUsername} already exists.`);
-      }
-      continue;
+  // ─── CURRICULUM (subjects per grade with coefficients) ─────
+  const coefficients: Record<string, number> = {
+    Mathematics: 3, Science: 2, English: 3, History: 1, Geography: 1,
+    Physics: 2, Chemistry: 2, Biology: 2, "Computer Science": 1.5,
+    Art: 1, "Physical Education": 1, Music: 1,
+  };
+  const curricula = [];
+  for (const grade of grades) {
+    for (const subject of subjects) {
+      const c = await prisma.curriculum.create({
+        data: {
+          academicYearId: academicYear.id,
+          gradeId: grade.id,
+          subjectId: subject.id,
+          schoolId: school.id,
+          coefficient: coefficients[subject.name] ?? 1.0,
+          description: `${subject.name} curriculum for Grade ${grade.level}`,
+        },
+      });
+      curricula.push(c);
     }
+  }
+  console.log(`Created ${curricula.length} curriculum entries\n`);
 
-    const password = await bcrypt.hash(`teacher${i}pass`, 10);
-    auth = await prisma.auth.create({
+  // ─── ADMIN ───────────────────────────────────
+  const adminAuth = await prisma.auth.create({
+    data: {
+      username: "admin1",
+      email: "admin@springfield.edu",
+      password: hashedPassword,
+      role: "admin",
+      accountType: AccountType.SCHOOL_ADMIN,
+      schoolId: school.id,
+    },
+  });
+  const admin = await prisma.admin.create({
+    data: {
+      username: "admin1",
+      name: "Sarah",
+      surname: "Principal",
+      authId: adminAuth.id,
+      schoolId: school.id,
+    },
+  });
+  await prisma.schoolMembership.create({
+    data: { authId: adminAuth.id, schoolId: school.id, role: "admin", adminId: admin.id },
+  });
+  console.log("Created admin: admin1 (Sarah Principal)");
+
+  // ─── TEACHERS (15) ──────────────────────────
+  const teachers = [];
+  for (let i = 0; i < 15; i++) {
+    const sex = i % 2 === 0 ? UserSex.FEMALE : UserSex.MALE;
+    const { first, last } = randomName(sex);
+    const username = `teacher${i + 1}`;
+
+    const auth = await prisma.auth.create({
       data: {
-        username: teacherUsername,
-        email: teacherEmail,
-        password,
+        username,
+        email: `${username}@springfield.edu`,
+        password: hashedPassword,
         role: "teacher",
-        schoolId: school1.id,
+        accountType: AccountType.TEACHER,
+        schoolId: school.id,
       },
     });
-    await prisma.teacher.create({
+
+    const subjectIdx = i % subjects.length;
+    const classIdx = i % classes.length;
+
+    const teacher = await prisma.teacher.create({
       data: {
-        id: teacherUsername,
-        username: teacherUsername,
-        name: `TName${i}`,
-        surname: `TSurname${i}`,
-        email: teacherEmail,
-        phone: `123-456-789${i}`,
-        address: `Address${i}`,
-        bloodType: "A+",
-        sex: i % 2 === 0 ? UserSex.MALE : UserSex.FEMALE,
-        birthday: new Date(new Date().setFullYear(new Date().getFullYear() - 30)),
-        schoolId: school1.id,
-        subjects: { connect: [{ id: connectSubjectId }] },
-        classes: { connect: [{ id: connectClassId }] },
+        username,
+        name: first,
+        surname: last,
+        email: `${username}@springfield.edu`,
+        phone: `555-010-${String(i + 1).padStart(4, "0")}`,
+        address: `${randomInt(100, 999)} Oak Street`,
+        bloodType: randomFrom(["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"]),
+        sex,
+        birthday: new Date(randomInt(1975, 1995), randomInt(0, 11), randomInt(1, 28)),
+        schoolId: school.id,
         authId: auth.id,
+        subjects: { connect: [{ id: subjects[subjectIdx].id }] },
+        classes: { connect: [{ id: classes[classIdx].id }] },
       },
     });
-    console.log(`Created teacher and auth: ${teacherUsername}`);
-  }
 
-  // LESSON
-  const schoolTeachers = await prisma.teacher.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolTeacherIds = schoolTeachers.map(t => t.id);
-
-  for (let i = 1; i <= 30; i++) {
-    const lessonSubjectId = schoolSubjectIds[i % schoolSubjectIds.length];
-    const lessonClassId = schoolClassIds[i % schoolClassIds.length];
-    const lessonTeacherId = schoolTeacherIds[i % schoolTeacherIds.length];
-
-    await prisma.lesson.create({
-      data: {
-        name: `Lesson${i}`, 
-        day: Day[
-          Object.keys(Day)[
-            Math.floor(Math.random() * Object.keys(Day).length)
-          ] as keyof typeof Day
-        ], 
-        startTime: new Date(new Date().setHours(new Date().getHours() + 1)), 
-        endTime: new Date(new Date().setHours(new Date().getHours() + 3)), 
-        subjectId: lessonSubjectId,
-        classId: lessonClassId,
-        teacherId: lessonTeacherId,
-        schoolId: school1.id,
-      },
-    });
-  }
-
-  // PARENT
-  for (let i = 1; i <= 25; i++) {
-    const parentUsername = `parent${i}`; // Auth username
-    const parentProfileUsername = `parentId${i}`; // Parent profile username as per original script
-    const parentEmail = `parent${i}@example.com`;
-
-    let auth = await prisma.auth.findUnique({
-      where: { username: parentUsername },
+    await prisma.schoolMembership.create({
+      data: { authId: auth.id, schoolId: school.id, role: "teacher", teacherId: teacher.id },
     });
 
-    if (auth) {
-      console.log(`Auth for parent ${parentUsername} already exists. Checking/creating Parent profile.`);
-      let parentProfile = await prisma.parent.findUnique({where: { username: parentProfileUsername }});
-      if (!parentProfile) {
-         await prisma.parent.create({
-          data: {
-            id: parentProfileUsername,
-            username: parentProfileUsername,
-            name: `PName ${i}`,
-            surname: `PSurname ${i}`,
-            email: parentEmail,
-            phone: `123-456-789${i}`,
-            address: `Address${i}`,
-            schoolId: school1.id,
-            authId: auth.id,
-          },
-        });
-        console.log(`Created Parent profile for ${parentProfileUsername} (auth ${parentUsername})`);
-      } else {
-        console.log(`Parent profile ${parentProfileUsername} already exists.`);
-      }
-      continue;
+    teachers.push(teacher);
+  }
+  console.log(`Created ${teachers.length} teachers`);
+
+  // ─── LESSONS (6 per class × 12 classes = 72 lessons) ────
+  const days = [Day.MONDAY, Day.TUESDAY, Day.WEDNESDAY, Day.THURSDAY, Day.FRIDAY];
+  const lessons: { id: number; name: string; classId: number }[] = [];
+  for (const cls of classes) {
+    const gradeSubjects = subjects.slice(0, 6);
+    for (let s = 0; s < gradeSubjects.length; s++) {
+      const day = days[s % days.length];
+      const hour = 8 + s;
+      const teacher = teachers[s % teachers.length];
+      const room = rooms[s % rooms.length];
+
+      const lesson = await prisma.lesson.create({
+        data: {
+          name: `${gradeSubjects[s].name} - ${cls.name}`,
+          day,
+          startTime: new Date(currentYear, 8, 1, hour, 0),
+          endTime: new Date(currentYear, 8, 1, hour + 1, 0),
+          subjectId: gradeSubjects[s].id,
+          classId: cls.id,
+          teacherId: teacher.id,
+          schoolId: school.id,
+          roomId: room.id,
+        },
+      });
+      lessons.push(lesson);
     }
+  }
+  console.log(`Created ${lessons.length} lessons`);
 
-    const password = await bcrypt.hash(`parent${i}pass`, 10);
-    auth = await prisma.auth.create({
+  // ─── PARENTS (30) ───────────────────────────
+  const parents = [];
+  for (let i = 0; i < 30; i++) {
+    const sex = i % 2 === 0 ? UserSex.FEMALE : UserSex.MALE;
+    const { first, last } = randomName(sex);
+    const username = `parent${i + 1}`;
+
+    const auth = await prisma.auth.create({
       data: {
-        username: parentUsername,
-        email: parentEmail,
-        password,
+        username,
+        email: `${username}@email.com`,
+        password: hashedPassword,
         role: "parent",
-        schoolId: school1.id,
+        accountType: AccountType.PARENT,
+        schoolId: school.id,
       },
     });
-    await prisma.parent.create({
+
+    const parent = await prisma.parent.create({
       data: {
-        id: parentProfileUsername,
-        username: parentProfileUsername,
-        name: `PName ${i}`,
-        surname: `PSurname ${i}`,
-        email: parentEmail,
-        phone: `123-456-789${i}`,
-        address: `Address${i}`,
-        schoolId: school1.id,
+        username,
+        name: first,
+        surname: last,
+        email: `${username}@email.com`,
+        phone: `555-020-${String(i + 1).padStart(4, "0")}`,
+        address: `${randomInt(100, 999)} Maple Drive`,
+        schoolId: school.id,
         authId: auth.id,
       },
     });
-    console.log(`Created parent and auth: ${parentUsername}`);
-  }
 
-  // STUDENT
-  const schoolParents = await prisma.parent.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolParentIds = schoolParents.map(p => p.id);
-
-  const schoolGrades = await prisma.grade.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true },
-  });
-  const schoolGradeIds = schoolGrades.map(g => g.id);
-
-  for (let i = 1; i <= 50; i++) {
-    const studentUsername = `student${i}`;
-    const studentEmail = `student${i}@example.com`;
-
-    let auth = await prisma.auth.findUnique({
-      where: { username: studentUsername },
+    await prisma.schoolMembership.create({
+      data: { authId: auth.id, schoolId: school.id, role: "parent", parentId: parent.id },
     });
-    
-    const studentParentId = schoolParentIds[Math.ceil(i / 2) % schoolParentIds.length || 0];
-    const studentGradeId = schoolGradeIds[i % schoolGradeIds.length];
-    const studentClassId = schoolClassIds[i % schoolClassIds.length];
 
-    if (auth) {
-      console.log(`Auth for student ${studentUsername} already exists. Checking/creating Student profile.`);
-      let studentProfile = await prisma.student.findUnique({ where: {username: studentUsername }});
-      if(!studentProfile) {
-        await prisma.student.create({
+    parents.push(parent);
+  }
+  console.log(`Created ${parents.length} parents`);
+
+  // ─── STUDENTS (60, ~5 per class, 2 kids per parent) ─────
+  const students = [];
+  for (let i = 0; i < 60; i++) {
+    const sex = i % 2 === 0 ? UserSex.MALE : UserSex.FEMALE;
+    const { first, last } = randomName(sex);
+    const username = `student${i + 1}`;
+    const cls = classes[i % classes.length];
+    const grade = grades.find(g => g.id === cls.gradeId)!;
+    const parent = parents[Math.floor(i / 2) % parents.length];
+
+    const auth = await prisma.auth.create({
+      data: {
+        username,
+        email: `${username}@springfield.edu`,
+        password: hashedPassword,
+        role: "student",
+        accountType: AccountType.STUDENT,
+        schoolId: school.id,
+      },
+    });
+
+    const student = await prisma.student.create({
+      data: {
+        username,
+        name: first,
+        surname: last,
+        email: `${username}@springfield.edu`,
+        phone: `555-030-${String(i + 1).padStart(4, "0")}`,
+        address: `${randomInt(100, 999)} Elm Avenue`,
+        bloodType: randomFrom(["A+", "A-", "B+", "O+", "O-"]),
+        sex,
+        birthday: new Date(randomInt(2010, 2016), randomInt(0, 11), randomInt(1, 28)),
+        parentId: parent.id,
+        gradeId: grade.id,
+        classId: cls.id,
+        schoolId: school.id,
+        authId: auth.id,
+      },
+    });
+
+    await prisma.schoolMembership.create({
+      data: { authId: auth.id, schoolId: school.id, role: "student", studentId: student.id },
+    });
+
+    await prisma.studentEnrollmentHistory.create({
+      data: {
+        studentId: student.id,
+        classId: cls.id,
+        academicYearId: academicYear.id,
+        enrollmentDate: new Date(`${currentYear}-09-01`),
+        status: EnrollmentStatus.ENROLLED,
+      },
+    });
+
+    students.push(student);
+  }
+  console.log(`Created ${students.length} students with enrollment history\n`);
+
+  // ─── EXAMS (2 per subject-lesson combo, with varying maxScore/weight) ─────
+  const exams = [];
+  const lessonsForExams = lessons.slice(0, 24);
+  for (let i = 0; i < lessonsForExams.length; i++) {
+    const lesson = lessonsForExams[i];
+    const maxScore = randomFrom([20, 50, 100]);
+    const exam = await prisma.exam.create({
+      data: {
+        title: `${i < 12 ? "Midterm" : "Final"} - ${lesson.name}`,
+        startTime: new Date(currentYear, i < 12 ? 10 : 2, randomInt(1, 15), 9, 0),
+        endTime: new Date(currentYear, i < 12 ? 10 : 2, randomInt(1, 15), 11, 0),
+        maxScore,
+        weight: i < 12 ? 1.0 : 2.0,
+        lessonId: lesson.id,
+        schoolId: school.id,
+      },
+    });
+    exams.push(exam);
+  }
+  console.log(`Created ${exams.length} exams`);
+
+  // ─── ASSIGNMENTS (1 per first 20 lessons) ────
+  const assignments = [];
+  for (let i = 0; i < Math.min(20, lessons.length); i++) {
+    const lesson = lessons[i];
+    const maxScore = randomFrom([10, 20, 50]);
+    const a = await prisma.assignment.create({
+      data: {
+        title: `Homework ${i + 1} - ${lesson.name}`,
+        startDate: new Date(currentYear, 9, randomInt(1, 28)),
+        dueDate: new Date(currentYear, 9, randomInt(1, 28) + 7),
+        maxScore,
+        weight: 0.5,
+        lessonId: lesson.id,
+        schoolId: school.id,
+      },
+    });
+    assignments.push(a);
+  }
+  console.log(`Created ${assignments.length} assignments`);
+
+  // ─── RESULTS (exam and assignment scores for students) ─────
+  let resultCount = 0;
+  for (const exam of exams) {
+    const classStudents = students.filter(s => {
+      const lessonClass = lessons.find(l => l.id === exam.lessonId);
+      return lessonClass && s.classId === lessonClass.classId;
+    });
+    for (const student of classStudents.slice(0, 5)) {
+      await prisma.result.create({
+        data: {
+          score: randomScore(exam.maxScore),
+          studentId: student.id,
+          examId: exam.id,
+          schoolId: school.id,
+        },
+      });
+      resultCount++;
+    }
+  }
+  for (const assignment of assignments) {
+    const classStudents = students.filter(s => {
+      const lessonClass = lessons.find(l => l.id === assignment.lessonId);
+      return lessonClass && s.classId === lessonClass.classId;
+    });
+    for (const student of classStudents.slice(0, 5)) {
+      await prisma.result.create({
+        data: {
+          score: randomScore(assignment.maxScore),
+          studentId: student.id,
+          assignmentId: assignment.id,
+          schoolId: school.id,
+        },
+      });
+      resultCount++;
+    }
+  }
+  console.log(`Created ${resultCount} results`);
+
+  // ─── ATTENDANCE (last 30 school days for all students) ──────
+  let attendanceCount = 0;
+  for (const student of students) {
+    const studentLessons = lessons.filter(l => l.classId === student.classId).slice(0, 4);
+    for (let d = 0; d < 15; d++) {
+      const date = new Date(currentYear, 9, d + 1);
+      if (date.getDay() === 0 || date.getDay() === 6) continue;
+      for (const lesson of studentLessons) {
+        const roll = Math.random();
+        const status: AttendanceStatus = roll < 0.85 ? AttendanceStatus.PRESENT : roll < 0.95 ? AttendanceStatus.LATE : AttendanceStatus.ABSENT;
+        await prisma.attendance.create({
           data: {
-            id: studentUsername, 
-            username: studentUsername, 
-            name: `SName${i}`,
-            surname: `SSurname ${i}`,
-            email: studentEmail,
-            phone: `987-654-321${i}`,
-            address: `Address${i}`,
-            bloodType: "O-",
-            sex: i % 2 === 0 ? UserSex.MALE : UserSex.FEMALE,
-            birthday: new Date(new Date().setFullYear(new Date().getFullYear() - 10)),
-            parentId: studentParentId,
-            gradeId: studentGradeId,
-            classId: studentClassId,
-            schoolId: school1.id,
-            authId: auth.id,
+            date,
+            status,
+            studentId: student.id,
+            lessonId: lesson.id,
+            schoolId: school.id,
+            academicYearId: academicYear.id,
           },
         });
-        console.log(`Created Student profile for ${studentUsername}`);
-      } else {
-        console.log(`Student profile for ${studentUsername} already exists.`);
+        attendanceCount++;
       }
-      continue;
     }
-
-    const password = await bcrypt.hash(`student${i}pass`, 10);
-    auth = await prisma.auth.create({
-      data: {
-        username: studentUsername,
-        email: studentEmail,
-        password,
-        role: "student",
-        schoolId: school1.id,
-      },
-    });
-    await prisma.student.create({
-      data: {
-        id: studentUsername, 
-        username: studentUsername, 
-        name: `SName${i}`,
-        surname: `SSurname ${i}`,
-        email: studentEmail,
-        phone: `987-654-321${i}`,
-        address: `Address${i}`,
-        bloodType: "O-",
-        sex: i % 2 === 0 ? UserSex.MALE : UserSex.FEMALE,
-        birthday: new Date(new Date().setFullYear(new Date().getFullYear() - 10)),
-        parentId: studentParentId,
-        gradeId: studentGradeId,
-        classId: studentClassId,
-        schoolId: school1.id,
-        authId: auth.id,
-      },
-    });
-    console.log(`Created student and auth: ${studentUsername}`);
   }
+  console.log(`Created ${attendanceCount} attendance records\n`);
 
-  // EXAM
-  const schoolLessons = await prisma.lesson.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolLessonIds = schoolLessons.map(l => l.id);
-
-  for (let i = 1; i <= 10; i++) {
-    const examLessonId = schoolLessonIds[i % schoolLessonIds.length];
-
-    await prisma.exam.create({
-      data: {
-        title: `Exam ${i}`, 
-        startTime: new Date(new Date().setHours(new Date().getHours() + 1)), 
-        endTime: new Date(new Date().setHours(new Date().getHours() + 2)), 
-        lessonId: examLessonId,
-        schoolId: school1.id,
-      },
-    });
-  }
-
-  // ASSIGNMENT
-  for (let i = 1; i <= 10; i++) {
-    const assignmentLessonId = schoolLessonIds[i % schoolLessonIds.length];
-
-    await prisma.assignment.create({
-      data: {
-        title: `Assignment ${i}`, 
-        startDate: new Date(), 
-        dueDate: new Date(new Date().setDate(new Date().getDate() + 7)), 
-        lessonId: assignmentLessonId,
-        schoolId: school1.id,
-      },
-    });
-  }
-
-  // RESULT
-  const schoolExams = await prisma.exam.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolExamIds = schoolExams.map(e => e.id);
-
-  const schoolAssignments = await prisma.assignment.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolAssignmentIds = schoolAssignments.map(a => a.id);
-
-  const schoolStudents = await prisma.student.findMany({
-    where: { schoolId: school1.id },
-    select: { id: true }
-  });
-  const schoolStudentIds = schoolStudents.map(s => s.id);
-
-  for (let i = 1; i <= 10; i++) {
-    const resultStudentId = schoolStudentIds[i % schoolStudentIds.length];
-    const resultData = i % 2 === 0 ?
-        { examId: schoolExamIds[i % schoolExamIds.length] } :
-        { assignmentId: schoolAssignmentIds[i % schoolAssignmentIds.length] };
-
-    await prisma.result.create({
-      data: {
-        ...resultData,
-        score: Math.floor(Math.random() * 101),
-        studentId: resultStudentId,
-        schoolId: school1.id,
-      },
-    });
-  }
-
-  // ATTENDANCE
-  for (let i = 1; i <= 10; i++) {
-    const attendanceStudentId = schoolStudentIds[i % schoolStudentIds.length];
-    const attendanceLessonId = schoolLessonIds[i % schoolLessonIds.length];
-
-    await prisma.attendance.create({
-      data: {
-        date: new Date(), 
-        status: "Present",
-        studentId: attendanceStudentId,
-        lessonId: attendanceLessonId,
-        schoolId: school1.id,
-      },
-    });
-  }
-
-  // EVENT
-  for (let i = 1; i <= 5; i++) {
-    const eventClassId = schoolClassIds[i % schoolClassIds.length];
-
+  // ─── EVENTS ──────────────────────────────────
+  const eventData = [
+    { title: "Parent-Teacher Conference", description: "Annual meeting to discuss student progress", daysAhead: 14 },
+    { title: "Science Fair", description: "Students present their science projects", daysAhead: 30 },
+    { title: "Sports Day", description: "Inter-class sports competition", daysAhead: 45 },
+    { title: "End of Year Ceremony", description: "Graduation and award ceremony", daysAhead: 90 },
+    { title: "School Open Day", description: "Open day for prospective parents", daysAhead: 7 },
+  ];
+  for (let i = 0; i < eventData.length; i++) {
+    const e = eventData[i];
     await prisma.event.create({
       data: {
-        title: `Event ${i}`, 
-        description: `Description for event ${i}`, 
-        startTime: new Date(new Date().setDate(new Date().getDate() + i)), 
-        endTime: new Date(new Date().setDate(new Date().getDate() + i + 1)), 
-        classId: eventClassId,
-        schoolId: school1.id,
+        title: e.title,
+        description: e.description,
+        startTime: new Date(Date.now() + e.daysAhead * 86400000),
+        endTime: new Date(Date.now() + e.daysAhead * 86400000 + 3 * 3600000),
+        classId: i < classes.length ? classes[i].id : null,
+        schoolId: school.id,
       },
     });
   }
+  console.log(`Created ${eventData.length} events`);
 
-  // ANNOUNCEMENT
-  for (let i = 1; i <= 5; i++) {
-    const announcementClassId = schoolClassIds[i % schoolClassIds.length];
-
+  // ─── ANNOUNCEMENTS ───────────────────────────
+  const announcements = [
+    { title: "Welcome Back!", content: "Welcome to the new academic year. We are excited to have everyone back." },
+    { title: "Library Hours Extended", content: "The library will now be open until 6 PM on weekdays." },
+    { title: "Uniform Reminder", content: "Please ensure students wear proper school uniform every day." },
+    { title: "Midterm Exams Schedule", content: "Midterm exams will begin on November 15th. Study hard!" },
+    { title: "Holiday Break", content: "School will be closed from December 20th to January 3rd for winter break." },
+    { title: "New Computer Lab", content: "The new computer lab is now open. Students can book slots through their teachers." },
+  ];
+  for (let i = 0; i < announcements.length; i++) {
     await prisma.announcement.create({
       data: {
-        title: `Announcement ${i}`, 
-        content: `Description for announcement ${i}`,
-        classId: announcementClassId,
-        schoolId: school1.id,
+        ...announcements[i],
+        classId: i < 3 ? classes[i].id : null,
+        schoolId: school.id,
       },
     });
   }
+  console.log(`Created ${announcements.length} announcements`);
 
-  console.log("Seeding completed successfully.");
+  // ─── GRADING SCALES ──────────────────────────
+  const frenchScale = await prisma.gradingScale.create({
+    data: {
+      schoolId: school.id, name: "French System (/20)", maxScore: 20, isDefault: true,
+      bands: {
+        create: [
+          { label: "Excellent", abbreviation: "E", minPercentage: 80, maxPercentage: 100, color: "#22c55e", isPassing: true, order: 1 },
+          { label: "Very Good", abbreviation: "TB", minPercentage: 70, maxPercentage: 79.99, color: "#84cc16", isPassing: true, order: 2 },
+          { label: "Good", abbreviation: "B", minPercentage: 60, maxPercentage: 69.99, color: "#eab308", isPassing: true, order: 3 },
+          { label: "Satisfactory", abbreviation: "AB", minPercentage: 50, maxPercentage: 59.99, color: "#f97316", isPassing: true, order: 4 },
+          { label: "Insufficient", abbreviation: "I", minPercentage: 25, maxPercentage: 49.99, color: "#ef4444", isPassing: false, order: 5 },
+          { label: "Very Insufficient", abbreviation: "TI", minPercentage: 0, maxPercentage: 24.99, color: "#dc2626", isPassing: false, order: 6 },
+        ],
+      },
+    },
+  });
+  console.log(`Created grading scale: ${frenchScale.name}`);
+
+  await prisma.gradingScale.create({
+    data: {
+      schoolId: school.id, name: "US Letter Grade", maxScore: 100, isDefault: false,
+      bands: {
+        create: [
+          { label: "A+", abbreviation: "A+", minPercentage: 97, maxPercentage: 100, color: "#22c55e", isPassing: true, order: 1 },
+          { label: "A", abbreviation: "A", minPercentage: 93, maxPercentage: 96.99, color: "#22c55e", isPassing: true, order: 2 },
+          { label: "A-", abbreviation: "A-", minPercentage: 90, maxPercentage: 92.99, color: "#4ade80", isPassing: true, order: 3 },
+          { label: "B+", abbreviation: "B+", minPercentage: 87, maxPercentage: 89.99, color: "#84cc16", isPassing: true, order: 4 },
+          { label: "B", abbreviation: "B", minPercentage: 83, maxPercentage: 86.99, color: "#84cc16", isPassing: true, order: 5 },
+          { label: "B-", abbreviation: "B-", minPercentage: 80, maxPercentage: 82.99, color: "#a3e635", isPassing: true, order: 6 },
+          { label: "C+", abbreviation: "C+", minPercentage: 77, maxPercentage: 79.99, color: "#eab308", isPassing: true, order: 7 },
+          { label: "C", abbreviation: "C", minPercentage: 73, maxPercentage: 76.99, color: "#eab308", isPassing: true, order: 8 },
+          { label: "C-", abbreviation: "C-", minPercentage: 70, maxPercentage: 72.99, color: "#f59e0b", isPassing: true, order: 9 },
+          { label: "D", abbreviation: "D", minPercentage: 60, maxPercentage: 69.99, color: "#f97316", isPassing: true, order: 10 },
+          { label: "F", abbreviation: "F", minPercentage: 0, maxPercentage: 59.99, color: "#ef4444", isPassing: false, order: 11 },
+        ],
+      },
+    },
+  });
+  console.log("Created grading scale: US Letter Grade");
+
+  // ─── PROMOTION RULES ────────────────────────
+  for (const grade of grades) {
+    await prisma.promotionRules.create({
+      data: {
+        schoolId: school.id,
+        academicYearId: academicYear.id,
+        gradeId: grade.id,
+        passingThreshold: 50,
+        minimumOverallAverage: 50,
+        maxFailedSubjects: 2,
+        minimumAttendance: 75,
+        borderlineMargin: 5,
+      },
+    });
+  }
+  console.log(`Created promotion rules for ${grades.length} grades`);
+
+  // ─── JOIN CODES (samples) ────────────────────
+  const joinCodes = [
+    { code: "JOIN-1A-2025", type: JoinCodeType.CLASS_STUDENT, classId: classes[0].id, maxUses: 30 },
+    { code: "JOIN-1B-2025", type: JoinCodeType.CLASS_STUDENT, classId: classes[1].id, maxUses: 30 },
+    { code: "TEACHER-INVITE-01", type: JoinCodeType.TEACHER_INVITE, classId: null, maxUses: 5 },
+  ];
+  for (const jc of joinCodes) {
+    await prisma.joinCode.create({
+      data: {
+        code: jc.code,
+        schoolId: school.id,
+        type: jc.type,
+        classId: jc.classId,
+        maxUses: jc.maxUses,
+        createdBy: adminAuth.id,
+        expiresAt: new Date(Date.now() + 90 * 86400000),
+      },
+    });
+  }
+  console.log(`Created ${joinCodes.length} join codes\n`);
+
+  // ─── SUMMARY ──────────────────────────────────
+  console.log("════════════════════════════════════════════");
+  console.log("  SEED COMPLETE - LOGIN CREDENTIALS");
+  console.log("════════════════════════════════════════════");
+  console.log(`  Password for ALL accounts: ${COMMON_PASSWORD}`);
+  console.log("");
+  console.log("  System Admin:  sysadmin");
+  console.log("  School Admin:  admin1");
+  console.log("  Teachers:      teacher1 ... teacher15");
+  console.log("  Parents:       parent1  ... parent30");
+  console.log("  Students:      student1 ... student60");
+  console.log("");
+  console.log(`  School:        ${school.name}`);
+  console.log(`  Academic Year: ${academicYear.name}`);
+  console.log(`  Join Codes:    ${joinCodes.map(j => j.code).join(", ")}`);
+  console.log("════════════════════════════════════════════\n");
 }
 
 main()

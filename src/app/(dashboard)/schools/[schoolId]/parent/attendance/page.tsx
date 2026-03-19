@@ -48,8 +48,9 @@ export default async function ParentAttendancePage({
   // Calculate attendance statistics for each child
   const childrenWithStats = parent.students.map(student => {
     const totalAttendance = student.attendances.length;
-    const presentCount = student.attendances.filter(a => a.present).length;
-    const absentCount = totalAttendance - presentCount;
+    const presentCount = student.attendances.filter((a: any) => a.status === "PRESENT").length;
+    const absentCount = student.attendances.filter((a: any) => a.status === "ABSENT").length;
+    const lateCount = student.attendances.filter((a: any) => a.status === "LATE").length;
     const attendanceRate = totalAttendance ? Math.round((presentCount / totalAttendance) * 100) : 0;
 
     return {
@@ -58,6 +59,7 @@ export default async function ParentAttendancePage({
         totalAttendance,
         presentCount,
         absentCount,
+        lateCount,
         attendanceRate,
       }
     };

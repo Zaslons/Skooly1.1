@@ -4,27 +4,42 @@ import bcrypt from 'bcryptjs';
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { cookies } from 'next/headers';
 
-const JWT_SECRET_STRING = process.env.JWT_SECRET || 'your-secret-key-that-is-at-least-32-bytes-long';
+const JWT_SECRET_STRING = process.env.JWT_SECRET;
+if (!JWT_SECRET_STRING) {
+  throw new Error('JWT_SECRET environment variable is required but was not set.');
+}
 const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
 
 export type UserRole = 'admin' | 'teacher' | 'student' | 'parent' | 'system_admin';
 
-// Define UserIdentity for core user data
 export interface UserIdentity {
   id: string;
   username: string;
   email?: string;
   role: UserRole;
   schoolId?: string;
+  accountType?: string;
+  memberships?: MembershipInfo[];
+}
+
+export interface MembershipInfo {
+  id: string;
+  schoolId: string;
+  schoolName: string;
+  role: string;
+  isActive: boolean;
+  profileId?: string;
 }
 
 export type AuthUser = {
-  id: string; // This is the Auth table's ID
-  schoolId?: string | null; // Made optional to correctly represent system_admin
+  id: string;
+  schoolId?: string | null;
   username: string;
   email?: string | null;
   role: UserRole;
-  profileId?: string; // To store Student.id or Teacher.id if applicable
+  profileId?: string;
+  accountType?: string;
+  membershipId?: string;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -45,88 +60,237 @@ export async function generateToken(userPayload: Omit<AuthUser, keyof JWTPayload
 
 export async function verifyToken(token: string): Promise<AuthUser | null> {
   try {
-    const { payload } = await jwtVerify(token, JWT_SECRET, {
-    });
+    const { payload } = await jwtVerify(token, JWT_SECRET, {});
     return payload as AuthUser;
-  } catch (error: any) {
-    console.error("[verifyToken] Error verifying token - Name:", error.name, "Message:", error.message);
+  } catch {
     return null;
   }
 }
 
-export async function authenticateUser(identifier: string, password: string): Promise<{ user: UserIdentity; token: string } | null> {
-  console.log(`[authenticateUser] Attempting to authenticate with identifier: ${identifier}`);
+async function getProfileId(authId: string, role: string, schoolId?: string): Promise<string | undefined> {
+  if (role === 'teacher') {
+    const profile = await prisma.teacher.findFirst({
+      where: { authId, ...(schoolId ? { schoolId } : {}) },
+      select: { id: true },
+    });
+    return profile?.id;
+  }
+  if (role === 'student') {
+    const profile = await prisma.student.findFirst({
+      where: { authId, ...(schoolId ? { schoolId } : {}) },
+      select: { id: true },
+    });
+    return profile?.id;
+  }
+  return undefined;
+}
+
+export type AuthenticateResult = {
+  user: UserIdentity;
+  token: string;
+  needsSchoolSelection: boolean;
+  memberships: MembershipInfo[];
+};
+
+export async function authenticateUser(identifier: string, password: string): Promise<AuthenticateResult | null> {
   let authRecord = null;
 
-  // Rudimentary check if identifier is an email
   const isEmail = identifier.includes('@');
-  console.log(`[authenticateUser] Identifier isEmail: ${isEmail}`);
 
   if (isEmail) {
-    console.log(`[authenticateUser] Trying to find by email: ${identifier}`);
     authRecord = await prisma.auth.findUnique({
       where: { email: identifier },
     });
-    console.log(`[authenticateUser] Found by email:`, authRecord);
   }
 
-  // If not found by email, or if identifier is not an email, try by username
   if (!authRecord) {
-    console.log(`[authenticateUser] Not found by email (or not an email), trying by username: ${identifier}`);
     authRecord = await prisma.auth.findUnique({
       where: { username: identifier },
     });
-    console.log(`[authenticateUser] Found by username:`, authRecord);
   }
 
   if (!authRecord) {
-    console.log(`[authenticateUser] No authRecord found for identifier: ${identifier}`);
     return null;
   }
 
-  console.log(`[authenticateUser] AuthRecord found, comparing passwords...`);
   const isValid = await comparePasswords(password, authRecord.password);
-  console.log(`[authenticateUser] Password isValid: ${isValid}`);
   if (!isValid) return null;
 
-  // Fetch profileId if user is teacher or student
-  let profileId: string | undefined = undefined;
-  if (authRecord.role === 'teacher') {
-    const teacherProfile = await prisma.teacher.findUnique({
-      where: { authId: authRecord.id },
-      select: { id: true },
-    });
-    profileId = teacherProfile?.id;
-  } else if (authRecord.role === 'student') {
-    const studentProfile = await prisma.student.findUnique({
-      where: { authId: authRecord.id },
-      select: { id: true },
-    });
-    profileId = studentProfile?.id;
+  const memberships = await prisma.schoolMembership.findMany({
+    where: { authId: authRecord.id, isActive: true },
+    include: {
+      school: { select: { name: true } },
+      admin: { select: { id: true } },
+      teacher: { select: { id: true } },
+      student: { select: { id: true } },
+      parent: { select: { id: true } },
+    },
+  });
+
+  const membershipInfos: MembershipInfo[] = memberships.map(m => ({
+    id: m.id,
+    schoolId: m.schoolId,
+    schoolName: m.school.name,
+    role: m.role,
+    isActive: m.isActive,
+    profileId: m.admin?.id || m.teacher?.id || m.student?.id || m.parent?.id,
+  }));
+
+  if (authRecord.role === 'system_admin') {
+    const tokenPayload: AuthUser = {
+      id: authRecord.id,
+      username: authRecord.username,
+      email: authRecord.email || undefined,
+      role: 'system_admin',
+      accountType: authRecord.accountType,
+    };
+
+    const token = await generateToken(tokenPayload);
+    return {
+      user: {
+        id: authRecord.id,
+        username: authRecord.username,
+        email: authRecord.email || undefined,
+        role: 'system_admin',
+        accountType: authRecord.accountType,
+        memberships: membershipInfos,
+      },
+      token,
+      needsSchoolSelection: false,
+      memberships: membershipInfos,
+    };
   }
 
-  // Construct the payload for the token using AuthUser structure
-  const userPayloadForToken: AuthUser = {
+  if (memberships.length === 0) {
+    const role = (authRecord.role as UserRole) || 'admin';
+    const schoolId = authRecord.schoolId || undefined;
+    const profileId = await getProfileId(authRecord.id, role, schoolId);
+
+    const tokenPayload: AuthUser = {
+      id: authRecord.id,
+      username: authRecord.username,
+      email: authRecord.email || undefined,
+      role,
+      schoolId,
+      profileId,
+      accountType: authRecord.accountType,
+    };
+
+    const token = await generateToken(tokenPayload);
+    return {
+      user: {
+        id: authRecord.id,
+        username: authRecord.username,
+        email: authRecord.email || undefined,
+        role,
+        schoolId,
+        accountType: authRecord.accountType,
+        memberships: membershipInfos,
+      },
+      token,
+      needsSchoolSelection: false,
+      memberships: membershipInfos,
+    };
+  }
+
+  if (memberships.length === 1) {
+    const m = memberships[0];
+    const profileId = m.admin?.id || m.teacher?.id || m.student?.id || m.parent?.id;
+    const role = m.role as UserRole;
+
+    const tokenPayload: AuthUser = {
+      id: authRecord.id,
+      username: authRecord.username,
+      email: authRecord.email || undefined,
+      role,
+      schoolId: m.schoolId,
+      profileId,
+      accountType: authRecord.accountType,
+      membershipId: m.id,
+    };
+
+    const token = await generateToken(tokenPayload);
+    return {
+      user: {
+        id: authRecord.id,
+        username: authRecord.username,
+        email: authRecord.email || undefined,
+        role,
+        schoolId: m.schoolId,
+        accountType: authRecord.accountType,
+        memberships: membershipInfos,
+      },
+      token,
+      needsSchoolSelection: false,
+      memberships: membershipInfos,
+    };
+  }
+
+  const firstMembership = memberships[0];
+  const firstProfileId = firstMembership.admin?.id || firstMembership.teacher?.id || firstMembership.student?.id || firstMembership.parent?.id;
+  const tokenPayload: AuthUser = {
     id: authRecord.id,
     username: authRecord.username,
     email: authRecord.email || undefined,
-    role: authRecord.role as UserRole,
-    schoolId: authRecord.schoolId || undefined,
-    profileId: profileId,
+    role: firstMembership.role as UserRole,
+    schoolId: firstMembership.schoolId,
+    profileId: firstProfileId,
+    accountType: authRecord.accountType,
+    membershipId: firstMembership.id,
   };
 
-  const token = await generateToken(userPayloadForToken);
-  console.log(`[authenticateUser] Authentication successful for: ${identifier}`);
-  
-  const clientUserResponse: UserIdentity = {
-    id: authRecord.id,
-    username: authRecord.username,
-    email: authRecord.email || undefined,
-    role: authRecord.role as UserRole,
-    schoolId: authRecord.schoolId || undefined,
+  const token = await generateToken(tokenPayload);
+  return {
+    user: {
+      id: authRecord.id,
+      username: authRecord.username,
+      email: authRecord.email || undefined,
+      role: firstMembership.role as UserRole,
+      schoolId: firstMembership.schoolId,
+      accountType: authRecord.accountType,
+      memberships: membershipInfos,
+    },
+    token,
+    needsSchoolSelection: memberships.length > 1,
+    memberships: membershipInfos,
+  };
+}
+
+export async function selectSchoolMembership(authId: string, membershipId: string): Promise<string | null> {
+  const membership = await prisma.schoolMembership.findFirst({
+    where: { id: membershipId, authId, isActive: true },
+    include: {
+      school: { select: { name: true } },
+      admin: { select: { id: true } },
+      teacher: { select: { id: true } },
+      student: { select: { id: true } },
+      parent: { select: { id: true } },
+    },
+  });
+
+  if (!membership) return null;
+
+  const auth = await prisma.auth.findUnique({
+    where: { id: authId },
+    select: { username: true, email: true, accountType: true },
+  });
+
+  if (!auth) return null;
+
+  const profileId = membership.admin?.id || membership.teacher?.id || membership.student?.id || membership.parent?.id;
+
+  const tokenPayload: AuthUser = {
+    id: authId,
+    username: auth.username,
+    email: auth.email || undefined,
+    role: membership.role as UserRole,
+    schoolId: membership.schoolId,
+    profileId,
+    accountType: auth.accountType,
+    membershipId: membership.id,
   };
 
-  return { user: clientUserResponse, token };
+  return generateToken(tokenPayload);
 }
 
 export async function requireAuth(req: NextRequest): Promise<AuthUser | NextResponse> {
@@ -145,7 +309,7 @@ export async function requireAuth(req: NextRequest): Promise<AuthUser | NextResp
   if (!user) {
     const response = NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     if (req.cookies.get('auth_token')?.value) {
-        response.cookies.delete('auth_token');
+      response.cookies.delete('auth_token');
     }
     return response;
   }
@@ -166,41 +330,30 @@ export async function requireRole(req: NextRequest, roles: UserRole[]): Promise<
 export async function requireSchoolAccess(req: NextRequest, schoolIdParam: string): Promise<AuthUser | NextResponse> {
   const userOrResponse = await requireAuth(req);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  
+
   const user = userOrResponse;
 
-  if (user.role === 'admin') {
-    if (user.schoolId !== schoolIdParam) {
-        return NextResponse.json({ error: 'Admin access denied for this school' }, { status: 403 });
-    }
-  } else {
-    if (user.schoolId !== schoolIdParam) {
-      return NextResponse.json({ error: 'Access denied for this school' }, { status: 403 });
-    }
+  if (user.role === 'system_admin') {
+    return user;
+  }
+
+  if (user.schoolId !== schoolIdParam) {
+    return NextResponse.json({ error: 'Access denied for this school' }, { status: 403 });
   }
   return user;
 }
 
-// New function to get current user in Server Components
-export async function getCurrentUserOnPage(): Promise<AuthUser | null> {
+export async function getServerUser(): Promise<AuthUser | null> {
   const cookieStore = cookies();
   const tokenValue = cookieStore.get('auth_token')?.value;
 
   if (!tokenValue) {
-    console.log("[getCurrentUserOnPage] No auth_token cookie found.");
     return null;
   }
 
   try {
-    const user = await verifyToken(tokenValue);
-    if (!user) {
-      console.log("[getCurrentUserOnPage] Token verification failed or returned null.");
-      // Optionally, could clear the cookie here if it's invalid, but that's tricky in RSCs
-      // Best to handle redirection on the page if user is null and page requires auth.
-    }
-    return user;
-  } catch (error) {
-    console.error("[getCurrentUserOnPage] Error during token verification:", error);
+    return await verifyToken(tokenValue);
+  } catch {
     return null;
   }
-} 
+}

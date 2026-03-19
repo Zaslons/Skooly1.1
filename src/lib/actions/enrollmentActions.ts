@@ -3,17 +3,8 @@
 import prisma from '@/lib/prisma';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
-import { cookies } from 'next/headers';
-import { verifyToken, AuthUser } from '@/lib/auth';
+import { getServerUser } from '@/lib/auth';
 
-// Helper to get current authenticated user
-async function getCurrentUser(): Promise<AuthUser | null> {
-  const tokenCookie = cookies().get('auth_token');
-  if (!tokenCookie) return null;
-  return verifyToken(tokenCookie.value);
-}
-
-// Zod schema for enrolling a student
 const EnrollStudentSchema = z.object({
   schoolId: z.string().cuid({ message: 'Valid School ID is required.' }),
   academicYearId: z.string().cuid({ message: 'Valid Academic Year ID is required.' }),
@@ -25,14 +16,13 @@ const EnrollStudentSchema = z.object({
 export interface EnrollStudentData {
   schoolId: string;
   academicYearId: string;
-  classId: number; // Already number from client
+  classId: number;
   studentId: string;
   enrollmentDate: Date;
 }
 
 export async function enrollStudentAction(data: EnrollStudentData) {
-  const currentUser = await getCurrentUser();
-  // For enrolling, typically an admin role is required.
+  const currentUser = await getServerUser();
   if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
     return { success: false, message: 'Unauthorized: You do not have permission to enroll students.' };
   }
@@ -46,7 +36,6 @@ export async function enrollStudentAction(data: EnrollStudentData) {
   const { schoolId, academicYearId, classId, studentId, enrollmentDate } = validatedFields.data;
 
   try {
-    // Verify AY, Class, and Student exist and belong to the school
     const [ay, cls, student] = await Promise.all([
       prisma.academicYear.findUnique({ where: { id: academicYearId, schoolId, isArchived: false } }),
       prisma.class.findUnique({ where: { id: classId, schoolId, academicYearId } }),
@@ -57,15 +46,19 @@ export async function enrollStudentAction(data: EnrollStudentData) {
     if (!cls) return { success: false, message: 'Class not found or invalid for the academic year.' };
     if (!student) return { success: false, message: 'Student not found or invalid for this school.' };
 
-    // Check for existing active enrollment for this student in ANY class for THIS academic year
-    // A student should generally not be active in two classes in the same AY.
-    // If they are moving classes, the old enrollment should be ended (departureDate set).
+    if (enrollmentDate < ay.startDate || enrollmentDate > ay.endDate) {
+      return { success: false, message: 'Enrollment date must be within the academic year date range.' };
+    }
+
+    const activeEnrollmentCount = await prisma.studentEnrollmentHistory.count({
+      where: { classId, departureDate: null },
+    });
+    if (activeEnrollmentCount >= cls.capacity) {
+      return { success: false, message: `Class "${cls.name}" is full (${cls.capacity}/${cls.capacity} students).` };
+    }
+
     const existingEnrollment = await prisma.studentEnrollmentHistory.findFirst({
-      where: {
-        studentId: studentId,
-        academicYearId: academicYearId,
-        departureDate: null, // Actively enrolled
-      },
+      where: { studentId, academicYearId, departureDate: null },
     });
 
     if (existingEnrollment) {
@@ -74,42 +67,44 @@ export async function enrollStudentAction(data: EnrollStudentData) {
       }
       return { 
         success: false, 
-        message: `Student is already actively enrolled in another class (ID: ${existingEnrollment.classId}) for this academic year. Please end the previous enrollment before starting a new one.` 
+        message: `Student is already actively enrolled in another class (ID: ${existingEnrollment.classId}) for this academic year. Please end the previous enrollment or use the transfer action.` 
       };
     }
     
-    const newEnrollment = await prisma.studentEnrollmentHistory.create({
-      data: {
-        studentId,
-        classId,
-        academicYearId,
-        enrollmentDate,
-        departureDate: null,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      const newEnrollment = await tx.studentEnrollmentHistory.create({
+        data: {
+          studentId,
+          classId,
+          academicYearId,
+          enrollmentDate,
+          departureDate: null,
+        },
+      });
+
+      await tx.student.update({
+        where: { id: studentId },
+        data: { classId, gradeId: cls.gradeId },
+      });
+
+      return newEnrollment;
     });
 
     revalidatePath(`/schools/${schoolId}/academic-years/${academicYearId}/classes/${classId}/enrollments`);
+    revalidatePath(`/schools/${schoolId}/list/students`);
 
-    return {
-      success: true,
-      message: 'Student enrolled successfully!',
-      enrollment: newEnrollment,
-    };
-
+    return { success: true, message: 'Student enrolled successfully!', enrollment: result };
   } catch (error: any) {
-    console.error("Error enrolling student:", error);
-    if (error.code === 'P2002') { // Unique constraint violation (e.g. studentId_classId if active only)
-        return { success: false, message: 'This student might already have an enrollment record for this class (possibly inactive).' };
+    if (error.code === 'P2002') {
+      return { success: false, message: 'This student might already have an enrollment record for this class.' };
     }
     return { success: false, message: error.message || 'Failed to enroll student due to a server error.' };
   }
 }
 
-// Zod schema for unenrolling a student (updating departure date)
 const UnenrollStudentSchema = z.object({
   enrollmentId: z.string().cuid({ message: 'Valid Enrollment ID is required.' }),
   departureDate: z.date({ message: 'Departure date is required.' }),
-  // For revalidation, we also need schoolId, academicYearId, classId from the client or fetched here
   schoolId: z.string().cuid(), 
   academicYearId: z.string().cuid(),
   classId: z.number().int().positive(),
@@ -118,14 +113,13 @@ const UnenrollStudentSchema = z.object({
 export interface UnenrollStudentData {
   enrollmentId: string;
   departureDate: Date;
-  schoolId: string; // Needed for auth and revalidate path
-  academicYearId: string; // Needed for revalidate path
-  classId: number; // Needed for revalidate path
+  schoolId: string;
+  academicYearId: string;
+  classId: number;
 }
 
 export async function unenrollStudentAction(data: UnenrollStudentData) {
-  const currentUser = await getCurrentUser();
-  // For unenrolling, typically an admin role is required.
+  const currentUser = await getServerUser();
   if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
     return { success: false, message: 'Unauthorized: You do not have permission to unenroll students.' };
   }
@@ -141,16 +135,13 @@ export async function unenrollStudentAction(data: UnenrollStudentData) {
   try {
     const enrollmentToUpdate = await prisma.studentEnrollmentHistory.findUnique({
       where: { id: enrollmentId },
-      include: {
-        class: { select: { schoolId: true } }, // Include class to check its schoolId
-      }
+      include: { class: { select: { schoolId: true } } },
     });
 
     if (!enrollmentToUpdate) {
       return { success: false, message: 'Enrollment record not found.' };
     }
 
-    // Authorization check: Ensure the enrollment record belongs to the correct school
     if (enrollmentToUpdate.class.schoolId !== schoolId) {
       return { success: false, message: 'Unauthorized: Enrollment record does not belong to your school.' };
     }
@@ -160,29 +151,109 @@ export async function unenrollStudentAction(data: UnenrollStudentData) {
     }
 
     if (enrollmentToUpdate.departureDate !== null) {
-        return { success: false, message: 'This student has already been unenrolled (departure date set).' };
+      return { success: false, message: 'This student has already been unenrolled.' };
     }
 
-    const updatedEnrollment = await prisma.studentEnrollmentHistory.update({
-      where: { id: enrollmentId },
-      data: {
-        departureDate: departureDate,
-      },
+    await prisma.$transaction(async (tx) => {
+      await tx.studentEnrollmentHistory.update({
+        where: { id: enrollmentId },
+        data: { departureDate },
+      });
+
+      await tx.student.update({
+        where: { id: enrollmentToUpdate.studentId },
+        data: { classId: null, gradeId: null },
+      });
     });
 
     revalidatePath(`/schools/${schoolId}/academic-years/${academicYearId}/classes/${classId}/enrollments`);
+    revalidatePath(`/schools/${schoolId}/list/students`);
 
-    return {
-      success: true,
-      message: 'Student unenrolled successfully (departure date set)!',
-      enrollment: updatedEnrollment,
-    };
-
+    return { success: true, message: 'Student unenrolled successfully!' };
   } catch (error: any) {
-    console.error("Error unenrolling student:", error);
-     if (error.code === 'P2025') { // Record to update not found
-        return { success: false, message: 'Enrollment record not found for update.' };
+    if (error.code === 'P2025') {
+      return { success: false, message: 'Enrollment record not found for update.' };
     }
     return { success: false, message: error.message || 'Failed to unenroll student due to a server error.' };
   }
-} 
+}
+
+export interface TransferStudentData {
+  schoolId: string;
+  academicYearId: string;
+  studentId: string;
+  fromClassId: number;
+  toClassId: number;
+  transferDate: Date;
+}
+
+export async function transferStudentAction(data: TransferStudentData) {
+  const currentUser = await getServerUser();
+  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+    return { success: false, message: 'Unauthorized.' };
+  }
+
+  const { schoolId, academicYearId, studentId, fromClassId, toClassId, transferDate } = data;
+
+  if (fromClassId === toClassId) {
+    return { success: false, message: 'Source and destination classes must be different.' };
+  }
+
+  try {
+    const [fromClass, toClass, student, ay] = await Promise.all([
+      prisma.class.findUnique({ where: { id: fromClassId, schoolId, academicYearId } }),
+      prisma.class.findUnique({ where: { id: toClassId, schoolId, academicYearId } }),
+      prisma.student.findUnique({ where: { id: studentId, schoolId } }),
+      prisma.academicYear.findUnique({ where: { id: academicYearId, schoolId, isArchived: false } }),
+    ]);
+
+    if (!fromClass) return { success: false, message: 'Source class not found.' };
+    if (!toClass) return { success: false, message: 'Destination class not found.' };
+    if (!student) return { success: false, message: 'Student not found.' };
+    if (!ay) return { success: false, message: 'Academic year not found or archived.' };
+
+    const activeEnrollmentCount = await prisma.studentEnrollmentHistory.count({
+      where: { classId: toClassId, departureDate: null },
+    });
+    if (activeEnrollmentCount >= toClass.capacity) {
+      return { success: false, message: `Destination class "${toClass.name}" is full.` };
+    }
+
+    const currentEnrollment = await prisma.studentEnrollmentHistory.findFirst({
+      where: { studentId, classId: fromClassId, academicYearId, departureDate: null },
+    });
+
+    if (!currentEnrollment) {
+      return { success: false, message: 'No active enrollment found in the source class.' };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.studentEnrollmentHistory.update({
+        where: { id: currentEnrollment.id },
+        data: { departureDate: transferDate },
+      });
+
+      await tx.studentEnrollmentHistory.create({
+        data: {
+          studentId,
+          classId: toClassId,
+          academicYearId,
+          enrollmentDate: transferDate,
+        },
+      });
+
+      await tx.student.update({
+        where: { id: studentId },
+        data: { classId: toClassId, gradeId: toClass.gradeId },
+      });
+    });
+
+    revalidatePath(`/schools/${schoolId}/academic-years/${academicYearId}/classes/${fromClassId}/enrollments`);
+    revalidatePath(`/schools/${schoolId}/academic-years/${academicYearId}/classes/${toClassId}/enrollments`);
+    revalidatePath(`/schools/${schoolId}/list/students`);
+
+    return { success: true, message: 'Student transferred successfully!' };
+  } catch (error: any) {
+    return { success: false, message: error.message || 'Failed to transfer student.' };
+  }
+}

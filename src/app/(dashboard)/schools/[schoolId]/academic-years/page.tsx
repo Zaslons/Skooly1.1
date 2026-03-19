@@ -1,18 +1,7 @@
 import prisma from '@/lib/prisma';
 import AcademicYearsClient from './AcademicYearsClient'; // Reverted to no .tsx extension
-import { cookies } from 'next/headers'; // For server-side cookie access
-import { verifyToken, AuthUser } from '@/lib/auth'; // Ensure AuthUser is imported
+import { getServerUser } from '@/lib/auth';
 import { redirect } from 'next/navigation'; // For redirecting
-
-// Helper function to get current authenticated user in a Server Component
-async function getCurrentUserOnPage(): Promise<AuthUser | null> {
-  const tokenCookie = cookies().get('auth_token');
-  if (!tokenCookie) {
-    return null;
-  }
-  const user = await verifyToken(tokenCookie.value);
-  return user;
-}
 
 // Helper function to fetch academic years (similar to API logic)
 async function getAcademicYears(schoolId: string, includeArchived: boolean = false) {
@@ -50,7 +39,7 @@ export default async function AcademicYearsPage({ params, searchParams }: Academ
   const { schoolId } = params;
 
   // Authentication & Authorization
-  const currentUser = await getCurrentUserOnPage();
+  const currentUser = await getServerUser();
 
   if (!currentUser) {
     // Not logged in, redirect to sign-in page

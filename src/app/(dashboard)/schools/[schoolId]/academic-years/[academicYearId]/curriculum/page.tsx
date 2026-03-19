@@ -1,16 +1,8 @@
 import prisma from '@/lib/prisma';
-import { cookies } from 'next/headers';
-import { verifyToken, AuthUser } from '@/lib/auth';
+import { getServerUser } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 import CurriculumClient from './CurriculumClient'; // To be created
 import { AcademicYear, Curriculum, Grade, Subject } from '@prisma/client'; // Import Prisma types
-
-// Helper to get current authenticated user
-async function getCurrentUserOnPage(): Promise<AuthUser | null> {
-  const tokenCookie = cookies().get('auth_token');
-  if (!tokenCookie) return null;
-  return verifyToken(tokenCookie.value);
-}
 
 // Type for Curriculum entries with included Grade and Subject
 export type CurriculumWithRelations = Curriculum & {
@@ -30,7 +22,7 @@ export default async function CurriculumPage({ params, searchParams }: Curriculu
   const { schoolId, academicYearId } = params;
 
   // Authentication & Authorization
-  const currentUser = await getCurrentUserOnPage();
+  const currentUser = await getServerUser();
   if (!currentUser) {
     redirect(`/sign-in?callbackUrl=/schools/${schoolId}/academic-years/${academicYearId}/curriculum`);
   }

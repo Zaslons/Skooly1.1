@@ -1,12 +1,10 @@
 "use client";
 
-// import { useUser } from "@clerk/nextjs"; // Removed Clerk import
 import Image from "next/image";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation"; // Added useRouter
-import { useEffect, useState } from "react"; // Added useEffect, useState
-// import { verifyToken, type AuthUser } from "../lib/auth"; // No longer verify token client-side
-import type { AuthUser } from "../lib/auth"; // Still need AuthUser type
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import type { AuthUser } from "../lib/auth";
 import { 
   ArrowDownOnSquareIcon, 
   CreditCardIcon, 
@@ -31,14 +29,25 @@ import {
   UserCircleIcon,
   WrenchScrewdriverIcon,
   ArrowRightOnRectangleIcon,
-  UserIcon,
-  ChevronDoubleLeftIcon, // Added for toggle
-  Bars3Icon, // Added for toggle when collapsed
+  ChevronDoubleLeftIcon,
+  Bars3Icon,
+  ArrowsRightLeftIcon,
+  KeyIcon,
+  ChartBarIcon,
+  ArrowPathIcon,
 } from '@heroicons/react/24/outline';
+
+interface MembershipInfo {
+  id: string;
+  schoolId: string;
+  schoolName: string;
+  role: string;
+  isActive: boolean;
+}
 
 const menuItems = [
   {
-    title: "MENU",
+    title: "MAIN",
     items: [
       {
         icon: HomeIcon,
@@ -46,6 +55,11 @@ const menuItems = [
         href: "/",
         visible: ["admin", "teacher", "student", "parent"],
       },
+    ],
+  },
+  {
+    title: "PEOPLE",
+    items: [
       {
         icon: UserGroupIcon,
         label: "Teachers",
@@ -64,10 +78,15 @@ const menuItems = [
         href: "/list/parents",
         visible: ["admin", "teacher"],
       },
+    ],
+  },
+  {
+    title: "SCHOOL",
+    items: [
       {
-        icon: BookOpenIcon,
-        label: "Subjects",
-        href: "/list/subjects",
+        icon: ListBulletIcon,
+        label: "Grades",
+        href: "/list/grades",
         visible: ["admin"],
       },
       {
@@ -77,9 +96,9 @@ const menuItems = [
         visible: ["admin", "teacher"],
       },
       {
-        icon: ListBulletIcon,
-        label: "Grades",
-        href: "/list/grades",
+        icon: BookOpenIcon,
+        label: "Subjects",
+        href: "/list/subjects",
         visible: ["admin"],
       },
       {
@@ -94,6 +113,11 @@ const menuItems = [
         href: "/academic-years",
         visible: ["admin"],
       },
+    ],
+  },
+  {
+    title: "SCHEDULING",
+    items: [
       {
         icon: ClipboardDocumentListIcon,
         label: "Lessons",
@@ -101,29 +125,46 @@ const menuItems = [
         visible: ["admin", "teacher"],
       },
       {
-        icon: UserCircleIcon, // Changed icon for better visual
-        label: "Teacher Availability", // Changed label for consistency
-        href: "/teacher/availability",
-        visible: ["teacher"],
-      },
-      {
-        icon: CalendarIcon, // Changed icon
+        icon: CalendarIcon,
         label: "My Schedule",
         href: "/teacher/my-schedule",
         visible: ["teacher"],
       },
       {
-        icon: PencilSquareIcon, // Changed icon
-        label: "My Change Requests", // Changed label for consistency
+        icon: CalendarIcon,
+        label: "My Schedule",
+        href: "/student/my-schedule",
+        visible: ["student"],
+      },
+      {
+        icon: CalendarDaysIcon,
+        label: "Manage Schedule",
+        href: "/admin/schedule",
+        visible: ["admin"],
+      },
+      {
+        icon: UserCircleIcon,
+        label: "Teacher Availability",
+        href: "/teacher/availability",
+        visible: ["teacher"],
+      },
+      {
+        icon: PencilSquareIcon,
+        label: "My Change Requests",
         href: "/teacher/my-requests",
         visible: ["teacher"],
       },
       {
-        icon: ClipboardDocumentCheckIcon, // Changed icon
-        label: "Pending Requests", // New Admin Link
+        icon: ClipboardDocumentCheckIcon,
+        label: "Pending Requests",
         href: "/admin/schedule-requests",
         visible: ["admin"],
       },
+    ],
+  },
+  {
+    title: "ACADEMICS",
+    items: [
       {
         icon: PencilSquareIcon,
         label: "Exams",
@@ -146,25 +187,41 @@ const menuItems = [
         icon: ClipboardDocumentCheckIcon,
         label: "Attendance",
         href: "/attendance",
-        visible: ["admin", "teacher"], // Only admin and teacher take attendance usually
-      },
-      {
-        icon: CalendarIcon,
-        label: "Events",
-        href: "/list/events",
         visible: ["admin", "teacher", "student", "parent"],
       },
+    ],
+  },
+  {
+    title: "FAMILY",
+    items: [
       {
-        icon: EnvelopeIcon,
-        label: "Messages",
-        href: "/list/messages",
-        visible: ["admin", "teacher", "student", "parent"],
+        icon: UsersIcon,
+        label: "My Children",
+        href: "/parent/my-children",
+        visible: ["parent"],
+      },
+    ],
+  },
+  {
+    title: "ADMIN TOOLS",
+    items: [
+      {
+        icon: ChartBarIcon,
+        label: "Grading Scales",
+        href: "/admin/grading-scale",
+        visible: ["admin"],
       },
       {
-        icon: MegaphoneIcon,
-        label: "Announcements",
-        href: "/list/announcements",
-        visible: ["admin", "teacher", "student", "parent"],
+        icon: ArrowPathIcon,
+        label: "Promotions",
+        href: "/admin/promotions",
+        visible: ["admin"],
+      },
+      {
+        icon: KeyIcon,
+        label: "Join Codes",
+        href: "/admin/join-codes",
+        visible: ["admin"],
       },
       {
         icon: ArrowDownOnSquareIcon,
@@ -178,11 +235,28 @@ const menuItems = [
         href: "/admin/subscription",
         visible: ["admin"],
       },
+    ],
+  },
+  {
+    title: "COMMUNICATION",
+    items: [
       {
-        icon: CalendarDaysIcon,
-        label: "Manage Schedule",
-        href: "/admin/schedule",
-        visible: ["admin"],
+        icon: CalendarIcon,
+        label: "Events",
+        href: "/list/events",
+        visible: ["admin", "teacher", "student", "parent"],
+      },
+      {
+        icon: MegaphoneIcon,
+        label: "Announcements",
+        href: "/list/announcements",
+        visible: ["admin", "teacher", "student", "parent"],
+      },
+      {
+        icon: EnvelopeIcon,
+        label: "Messages",
+        href: "/list/messages",
+        visible: ["admin", "teacher", "student", "parent"],
       },
     ],
   },
@@ -223,7 +297,7 @@ const menuItems = [
         label: "Logout",
         href: "/logout",
         visible: ["admin", "teacher", "student", "parent"],
-        alwaysShowLabel: true, // Special prop for logout
+        alwaysShowLabel: true,
       },
     ],
   },
@@ -231,11 +305,10 @@ const menuItems = [
 
 const Menu = () => {
   const { schoolId: schoolIdFromParams } = useParams();
-  // const { user } = useUser(); // Removed Clerk useUser
-  const router = useRouter(); // Initialize useRouter
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [loadingAuth, setLoadingAuth] = useState(true); // Renamed for clarity
-  const [isOpen, setIsOpen] = useState(true); // State for menu collapse
+  const router = useRouter();
+  const [authUser, setAuthUser] = useState<(AuthUser & { memberships?: MembershipInfo[] }) | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isOpen, setIsOpen] = useState(true);
 
   useEffect(() => {
     const fetchCurrentUser = async () => {
@@ -247,50 +320,39 @@ const Menu = () => {
           setAuthUser(user);
         } else {
           setAuthUser(null);
-          // If not authenticated, middleware should ideally handle redirection.
-          // However, if a page is somehow accessed without middleware (e.g. static export), 
-          // or for an extra layer of client-side safety:
           if (response.status === 401 && window.location.pathname !== '/sign-in' && window.location.pathname !== '/create-school') {
-             router.push("/sign-in?message=Session expired. Please sign in again.");
+            router.push("/sign-in?message=Session expired. Please sign in again.");
           }
         }
-      } catch (error) {
-        console.error("Failed to fetch current user for menu:", error);
+      } catch {
         setAuthUser(null);
       }
       setLoadingAuth(false);
     };
     fetchCurrentUser();
-  }, [router]); // router is a dependency
+  }, [router]);
   
   const role = authUser?.role as string;
 
   const constructPath = (baseHref: string, currentSchoolIdParam?: string | string[]) => {
     const currentSchoolId = Array.isArray(currentSchoolIdParam) ? currentSchoolIdParam[0] : currentSchoolIdParam;
 
-    // NEW: Handle system admin routes first - they are not school-specific
     if (baseHref.startsWith("/system/")) {
       return baseHref;
     }
 
-    // Determine the correct base path for attendance based on role
-    // These paths should now match the actual directory structure
-    let attendanceBasePath = "/list/attendance"; // Admin
-    if (role === "teacher") attendanceBasePath = "/teacher/attendance"; // Teacher
-    else if (role === "student") attendanceBasePath = "/student/attendance"; // Student
-    else if (role === "parent") attendanceBasePath = "/parent/attendance"; // Parent
-    
+    let attendanceBasePath = "/list/attendance";
+    if (role === "teacher") attendanceBasePath = "/teacher/attendance";
+    else if (role === "student") attendanceBasePath = "/student/attendance";
+    else if (role === "parent") attendanceBasePath = "/parent/attendance";
 
-    // Construct path based on type
     if (currentSchoolId && (baseHref.startsWith("/list/") || baseHref.startsWith("/admin/") || baseHref === "/academic-years")) {
       return `/schools/${currentSchoolId}${baseHref}`;
-    } else if (currentSchoolId && baseHref.startsWith("/teacher/")) {
+    } else if (currentSchoolId && (baseHref.startsWith("/teacher/") || baseHref.startsWith("/student/"))) {
       return `/schools/${currentSchoolId}${baseHref}`;
     } else if (currentSchoolId && baseHref === "/attendance") {
-      // Use the role-specific base path for the attendance link
       return `/schools/${currentSchoolId}${attendanceBasePath}`;
     } else if (currentSchoolId && baseHref === "/") {
-      // Home link goes to the role-specific dashboard or profile page
       switch (role) {
         case 'admin':
           return `/schools/${currentSchoolId}/admin`;
@@ -298,12 +360,12 @@ const Menu = () => {
           if (authUser?.profileId) {
             return `/schools/${currentSchoolId}/list/teachers/${authUser.profileId}`;
           }
-          return `/schools/${currentSchoolId}/teacher`; // Fallback teacher dashboard
+          return `/schools/${currentSchoolId}/teacher`;
         case 'student':
           if (authUser?.profileId) {
             return `/schools/${currentSchoolId}/list/students/${authUser.profileId}`;
           }
-          return `/schools/${currentSchoolId}/student`; // Fallback student dashboard
+          return `/schools/${currentSchoolId}/student`;
         case 'parent':
           return `/schools/${currentSchoolId}/parent`;
         default:
@@ -315,54 +377,44 @@ const Menu = () => {
       } else if (role === 'student' && authUser?.profileId) {
         return `/schools/${currentSchoolId}/list/students/${authUser.profileId}`;
       } else if ((role === 'admin' || role === 'parent') && authUser?.id && currentSchoolId) {
-        // Generic profile page for admin/parent using their Auth ID
         return `/schools/${currentSchoolId}/profile/${authUser.id}`;
       }
-      // Fallback if role/id is missing or not admin/parent/teacher/student with profileId
       return currentSchoolId ? `/schools/${currentSchoolId}/profile` : "/profile"; 
     } else if (baseHref === "/settings") {
-        // Generic settings page, school-contextual
-        return currentSchoolId ? `/schools/${currentSchoolId}/settings` : "/settings";
+      return currentSchoolId ? `/schools/${currentSchoolId}/settings` : "/settings";
     } else if (baseHref === "/logout") {
-        return "/api/auth/sign-out"; // Direct to API route for logout
+      return "/api/auth/sign-out";
     }
-    // Other top-level links or unhandled cases
-    // For system_admin role, if currentSchoolId is not available (which it shouldn't be for sys admin specific views)
-    // and baseHref is like '/', it should probably go to a system admin dashboard.
     if (role === 'system_admin' && baseHref === '/') {
-        return '/system/dashboard'; // Or whatever the main system admin page is
+      return '/system/dashboard';
     }
     if (role === 'system_admin' && baseHref === '/profile') {
-        // System admin might have a profile page not tied to a school
-        return '/system/profile'; // Example, ensure this page exists
+      return '/system/profile';
     }
     if (role === 'system_admin' && baseHref === '/settings') {
-        return '/system/settings'; // Example
+      return '/system/settings';
     }
     return baseHref; 
   };
 
   const isItemVisible = (itemRoles: string[]) => {
-    if (loadingAuth) return false; // Don't show items if auth state is unknown
-    if (!authUser) return false; // No user, no items (except potentially public ones if any)
-    return itemRoles.some(role => authUser.role === role);
+    if (loadingAuth) return false;
+    if (!authUser) return false;
+    return itemRoles.some(r => authUser.role === r);
   };
+
+  const hasMultipleSchools = (authUser?.memberships?.length ?? 0) > 1;
   
-  if (loadingAuth && !authUser && window.location.pathname !== '/sign-in' && window.location.pathname !== '/create-school') {
-    // Optional: Render a minimal loading state for the menu area or nothing
-    // to prevent layout shifts if the menu suddenly appears.
-    return <div className="w-64 h-screen bg-gray-100 p-3 flex flex-col">{/* Skeleton or loading */}</div>;
+  if (loadingAuth && !authUser && typeof window !== 'undefined' && window.location.pathname !== '/sign-in' && window.location.pathname !== '/create-school') {
+    return <div className="w-64 h-screen bg-gray-100 p-3 flex flex-col" />;
   }
 
-  // Don't render the menu on sign-in or create-school pages
-  if (window.location.pathname === '/sign-in' || window.location.pathname === '/create-school') {
+  if (typeof window !== 'undefined' && (window.location.pathname === '/sign-in' || window.location.pathname === '/create-school' || window.location.pathname === '/select-school' || window.location.pathname === '/join')) {
     return null;
   }
   
-  // If not loading and no authenticated user, also don't render the menu
-  // This case should ideally be handled by page-level redirection by middleware
   if (!loadingAuth && !authUser) {
-      return null;
+    return null;
   }
 
   return (
@@ -370,18 +422,18 @@ const Menu = () => {
       className={`h-screen bg-gray-100 text-gray-800 flex flex-col justify-between transition-all duration-300 ease-in-out ${isOpen ? 'w-64' : 'w-20'}`}
     >
       <div className="flex-grow overflow-y-auto overflow-x-hidden">
-        {/* Logo and App Name - Commented out as per previous request */}
-        {/* <div className={`p-4 ${isOpen ? 'flex items-center space-x-3' : 'flex justify-center py-3'}`}>
-          <Image
-            src="/skooly_logo.png"
-            alt="Skooly Logo"
-            width={isOpen ? 40 : 32}
-            height={isOpen ? 40 : 32}
-            className="rounded-full"
-          />
-          {isOpen && <span className="text-xl font-bold text-gray-900">Skooly</span>}
-        </div> */}
-        
+        {hasMultipleSchools && isOpen && (
+          <div className="px-3 pt-3 pb-1">
+            <button
+              onClick={() => router.push('/select-school')}
+              className="w-full flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm hover:border-blue-400 hover:shadow-sm transition-all"
+            >
+              <ArrowsRightLeftIcon className="h-4 w-4 text-gray-500 flex-shrink-0" />
+              <span className="truncate text-gray-700 font-medium">Switch School</span>
+            </button>
+          </div>
+        )}
+
         <nav className="mt-3 px-2">
           {menuItems.map((section) =>
             section.items.some(item => isItemVisible(item.visible)) ? (
@@ -394,13 +446,13 @@ const Menu = () => {
                 <ul>
                   {section.items.map((item) =>
                     isItemVisible(item.visible) ? (
-                      <li key={item.label}>
+                      <li key={item.label + item.href}>
                         <Link
                           href={constructPath(item.href, schoolIdFromParams)}
                           className={`flex items-center space-x-3 rounded-md px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-200 hover:text-gray-900 group ${!isOpen ? 'justify-center' : ''}`}
                         >
                           <item.icon className="h-5 w-5 flex-shrink-0 text-gray-500 group-hover:text-gray-700" />
-                          {(isOpen || item.alwaysShowLabel) && <span className="truncate">{item.label}</span>}
+                          {(isOpen || (item as any).alwaysShowLabel) && <span className="truncate">{item.label}</span>}
                         </Link>
                       </li>
                     ) : null
@@ -412,7 +464,6 @@ const Menu = () => {
         </nav>
       </div>
       
-      {/* Toggle Button */}
       <div className={`p-2 border-t border-gray-200 ${isOpen ? 'flex justify-end' : 'flex justify-center'}`}>
         <button
           onClick={() => setIsOpen(!isOpen)}
@@ -422,7 +473,7 @@ const Menu = () => {
           {isOpen ? (
             <ChevronDoubleLeftIcon className="h-6 w-6" />
           ) : (
-            <Bars3Icon className="h-6 w-6" /> // Using Bars3Icon when collapsed
+            <Bars3Icon className="h-6 w-6" />
           )}
         </button>
       </div>

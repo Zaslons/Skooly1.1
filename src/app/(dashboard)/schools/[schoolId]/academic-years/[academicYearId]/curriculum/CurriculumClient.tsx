@@ -63,6 +63,7 @@ export default function CurriculumClient({
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [textbook, setTextbook] = useState<string>('');
+  const [coefficient, setCoefficient] = useState<number>(1.0);
 
   useEffect(() => {
     setCurriculumEntries(initialCurriculumEntries);
@@ -76,12 +77,14 @@ export default function CurriculumClient({
       setSelectedSubjectId(String(entry.subjectId));
       setDescription(entry.description || '');
       setTextbook(entry.textbook || '');
+      setCoefficient(entry.coefficient ?? 1.0);
     } else {
       setCurrentCurriculumEntry(null);
       setSelectedGradeId(gradesForSchool[0]?.id ? String(gradesForSchool[0].id) : '');
       setSelectedSubjectId(subjectsForSchool[0]?.id ? String(subjectsForSchool[0].id) : '');
       setDescription('');
       setTextbook('');
+      setCoefficient(1.0);
     }
     setIsModalOpen(true);
   };
@@ -99,15 +102,16 @@ export default function CurriculumClient({
     }
 
     const payload = {
-      schoolId, // Needed for create validation in action
+      schoolId,
       academicYearId,
       gradeId: selectedGradeId,
       subjectId: selectedSubjectId,
       description,
       textbook,
+      coefficient,
     };
     
-    const editPayload = { description, textbook };
+    const editPayload = { description, textbook, coefficient };
 
     startTransition(async () => {
       try {
@@ -171,6 +175,7 @@ export default function CurriculumClient({
             <tr>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Grade</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
+              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Coefficient</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Textbook</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -178,11 +183,11 @@ export default function CurriculumClient({
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {isPending && curriculumEntries.length === 0 && (
-                 <tr><td colSpan={5} className="p-4 text-center text-gray-500">Loading...</td></tr>
+                 <tr><td colSpan={6} className="p-4 text-center text-gray-500">Loading...</td></tr>
             )}
             {!isPending && curriculumEntries.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
+                <td colSpan={6} className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
                   No curriculum entries found for this academic year.
                 </td>
               </tr>
@@ -191,6 +196,7 @@ export default function CurriculumClient({
               <tr key={entry.id}>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{entry.grade.level}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{entry.subject.name}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{entry.coefficient ?? 1.0}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate max-w-xs">{entry.description}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate max-w-xs">{entry.textbook}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
@@ -203,6 +209,13 @@ export default function CurriculumClient({
                 </td>
               </tr>
             ))}
+            {curriculumEntries.length > 0 && (
+              <tr className="bg-gray-50 font-semibold">
+                <td className="px-6 py-3 text-sm text-gray-700" colSpan={2}>Total Coefficients</td>
+                <td className="px-6 py-3 text-sm text-gray-700">{curriculumEntries.reduce((sum, e) => sum + (e.coefficient ?? 1.0), 0).toFixed(1)}</td>
+                <td colSpan={3}></td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -275,6 +288,22 @@ export default function CurriculumClient({
               disabled={isPending}
               className="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
             />
+          </div>
+
+          <div className="mt-4">
+            <label htmlFor="coefficient" className="block text-sm font-medium text-gray-700">Coefficient</label>
+            <input
+              type="number"
+              id="coefficient"
+              name="coefficient"
+              value={coefficient}
+              onChange={(e) => setCoefficient(parseFloat(e.target.value) || 1.0)}
+              min="0.1"
+              step="0.1"
+              disabled={isPending}
+              className="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
+            />
+            <p className="mt-1 text-xs text-gray-400">How much this subject counts toward the overall average (default: 1.0)</p>
           </div>
 
           <div className="mt-6 flex justify-end space-x-2">

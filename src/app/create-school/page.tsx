@@ -7,6 +7,7 @@ import { useFormState, useFormStatus } from "react-dom";
 import { toast } from "react-toastify";
 import type { AuthUser } from "@/lib/auth"; // Still need AuthUser type
 import Image from "next/image"; // For loading state
+import Link from "next/link";
 
 function SubmitButton({ isNewUser }: { isNewUser: boolean }) {
   const { pending } = useFormStatus();
@@ -14,7 +15,7 @@ function SubmitButton({ isNewUser }: { isNewUser: boolean }) {
     <button
       type="submit"
       disabled={pending}
-      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+      className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-12 px-5 flex-1 bg-[#bf633f] text-[#fbf9f9] text-base font-bold leading-normal tracking-[0.015em] disabled:bg-[#e2d8d4]"
     >
       {pending
         ? isNewUser
@@ -109,10 +110,10 @@ export default function CreateSchoolPage() {
 
   if (loadingAuth) {
     return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
-            <Image src="/logo.png" alt="Skooly Logo" width={64} height={64} className="mb-4 animate-pulse" />
-            <p className="text-lg text-gray-700">Loading...</p>
-        </div>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F5F3F0]">
+        <Image src="/logo.png" alt="Skooly Logo" width={64} height={64} className="mb-4 animate-pulse" />
+        <p className="text-lg text-gray-700">Loading...</p>
+      </div>
     );
   }
 
@@ -121,119 +122,113 @@ export default function CreateSchoolPage() {
   const isNewUser = !authUser;
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-100">
-      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
-        {authUser ? (
-          <>
-            <h1 className="text-2xl font-bold text-center text-gray-900">
-              Welcome, {authUser.email}!
-            </h1>
-            <p className="text-center text-gray-600">
-              Let&apos;s set up your school. Please enter the name of your school below.
-              You will be assigned as the administrator.
-            </p>
-          </>
-        ) : (
-          <>
-            <h1 className="text-2xl font-bold text-center text-gray-900">
-              Create Your School & Admin Account
-            </h1>
-            <p className="text-center text-gray-600">
-              Enter your email, choose a password, and name your school to get started.
-            </p>
-          </>
-        )}
-        <form action={formAction} className="space-y-6">
-          {authUser && (
-            <>
-              <input type="hidden" name="userId" value={authUser.id} />
-              <input type="hidden" name="userEmail" value={authUser.email ?? ""} />
-            </>
-          )}
-
-          {!authUser && (
-            <>
-              <div>
-                <label
-                  htmlFor="email"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Your Email
-                </label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                  placeholder="you@example.com"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="password"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Password
-                </label>
-                <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autoComplete="new-password"
-                  required
-                  minLength={8}
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                  placeholder="••••••••"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="confirmPassword"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Confirm Password
-                </label>
-                <input
-                  id="confirmPassword"
-                  name="confirmPassword"
-                  type="password"
-                  autoComplete="new-password"
-                  required
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                  placeholder="••••••••"
-                />
-              </div>
-            </>
-          )}
-
-          <div>
-            <label
-              htmlFor="schoolName"
-              className="block text-sm font-medium text-gray-700"
+    <div className="relative flex size-full min-h-screen flex-col bg-[#F5F3F0] group/design-root overflow-x-hidden" style={{ fontFamily: 'Inter, \"Noto Sans\", sans-serif' }}>
+      <div className="layout-container flex h-full grow flex-col">
+        <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-b-[#f1ecea] px-10 py-3">
+          <Link href="/" className="flex items-center gap-4 text-[#181310]">
+            <div className="size-4 flex items-center justify-center">
+              <Image src="/logo.png" alt="Skooly Logo" width={24} height={24} />
+            </div>
+            <h2 className="text-[#181310] text-lg font-bold leading-tight tracking-[-0.015em]">Skooly</h2>
+          </Link>
+          <div className="flex flex-1 justify-end gap-8">
+            <div className="flex items-center gap-9">
+              <Link className="text-[#181310] text-sm font-medium leading-normal" href="#">Features</Link>
+              <Link className="text-[#181310] text-sm font-medium leading-normal" href="#">Pricing</Link>
+              <Link className="text-[#181310] text-sm font-medium leading-normal" href="#">Resources</Link>
+            </div>
+            <Link
+              href="/sign-in"
+              className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-10 px-4 bg-[#f1ecea] text-[#181310] text-sm font-bold leading-normal tracking-[0.015em]"
             >
-              School Name
-            </label>
-            <input
-              id="schoolName"
-              name="schoolName"
-              type="text"
-              required
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              placeholder="e.g., Springfield Elementary"
-            />
-            {state.error && state.message?.includes("name") && (
-                 <p className="mt-2 text-sm text-red-600">{state.message}</p>
-            )}
+              <span className="truncate">Log In</span>
+            </Link>
           </div>
-          <div>
-            <SubmitButton isNewUser={isNewUser} />
+        </header>
+        <div className="px-40 flex flex-1 justify-center py-5">
+          <div className="layout-content-container flex flex-col w-[512px] max-w-[512px] py-5 max-w-[960px] flex-1">
+            <h2 className="text-[#181310] tracking-light text-[28px] font-bold leading-tight px-4 text-center pb-3 pt-5">
+              {authUser ? "Set Up Your School" : "Create Your School & Admin Account"}
+            </h2>
+            <p className="text-center text-gray-600 mb-2">
+              {authUser
+                ? "Let's set up your school. Please enter the name of your school below. You will be assigned as the administrator."
+                : "Enter your email, choose a password, and name your school to get started."}
+            </p>
+            {state.error && <p className="text-sm text-red-500 bg-red-100 p-3 rounded-md mb-2">{state.message}</p>}
+            {state.success && <p className="text-sm text-green-600 bg-green-100 p-3 rounded-md mb-2">{state.message}</p>}
+            <form action={formAction} className="flex flex-col gap-0">
+              {authUser && (
+                <>
+                  <input type="hidden" name="userId" value={authUser.id} />
+                  <input type="hidden" name="userEmail" value={authUser.email ?? ""} />
+                </>
+              )}
+              {!authUser && (
+                <>
+                  <div className="flex max-w-[480px] flex-wrap items-end gap-4 px-4 py-3">
+                    <label className="flex flex-col min-w-40 flex-1">
+                      <input
+                        id="email"
+                        name="email"
+                        type="email"
+                        autoComplete="email"
+                        required
+                        className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-xl text-[#181310] focus:outline-0 focus:ring-0 border-none bg-[#f1ecea] focus:border-none h-14 placeholder:text-[#8a695c] p-4 text-base font-normal leading-normal"
+                        placeholder="Your Email"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex max-w-[480px] flex-wrap items-end gap-4 px-4 py-3">
+                    <label className="flex flex-col min-w-40 flex-1">
+                      <input
+                        id="password"
+                        name="password"
+                        type="password"
+                        autoComplete="new-password"
+                        required
+                        minLength={8}
+                        className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-xl text-[#181310] focus:outline-0 focus:ring-0 border-none bg-[#f1ecea] focus:border-none h-14 placeholder:text-[#8a695c] p-4 text-base font-normal leading-normal"
+                        placeholder="Password"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex max-w-[480px] flex-wrap items-end gap-4 px-4 py-3">
+                    <label className="flex flex-col min-w-40 flex-1">
+                      <input
+                        id="confirmPassword"
+                        name="confirmPassword"
+                        type="password"
+                        autoComplete="new-password"
+                        required
+                        className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-xl text-[#181310] focus:outline-0 focus:ring-0 border-none bg-[#f1ecea] focus:border-none h-14 placeholder:text-[#8a695c] p-4 text-base font-normal leading-normal"
+                        placeholder="Confirm Password"
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+              <div className="flex max-w-[480px] flex-wrap items-end gap-4 px-4 py-3">
+                <label className="flex flex-col min-w-40 flex-1">
+                  <input
+                    id="schoolName"
+                    name="schoolName"
+                    type="text"
+                    required
+                    className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-xl text-[#181310] focus:outline-0 focus:ring-0 border-none bg-[#f1ecea] focus:border-none h-14 placeholder:text-[#8a695c] p-4 text-base font-normal leading-normal"
+                    placeholder="School Name"
+                  />
+                </label>
+                {state.error && state.message?.includes("name") && (
+                  <p className="mt-2 text-sm text-red-600">{state.message}</p>
+                )}
+              </div>
+              <div className="flex px-4 py-3">
+                <SubmitButton isNewUser={isNewUser} />
+              </div>
+            </form>
           </div>
-          {state.error && !state.message?.includes("name") && (
-             <p className="mt-2 text-sm text-center text-red-600">{state.message}</p>
-          )}
-        </form>
+        </div>
       </div>
     </div>
   );

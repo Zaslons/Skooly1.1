@@ -90,6 +90,22 @@ const AssignmentForm = ({
           error={errors?.dueDate}
           type="datetime-local"
         />
+        <InputField
+          label="Max Score"
+          name="maxScore"
+          defaultValue={data?.maxScore ?? 100}
+          register={register}
+          error={errors?.maxScore}
+          type="number"
+        />
+        <InputField
+          label="Weight"
+          name="weight"
+          defaultValue={data?.weight ?? 1.0}
+          register={register}
+          error={errors?.weight}
+          type="number"
+        />
         
         {data && (
           <InputField

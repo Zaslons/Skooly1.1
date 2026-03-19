@@ -9,12 +9,13 @@ datasource db {
 
 // NEW: School model acting as the Tenant
 model School {
-  id        String   @id @default(cuid()) // Use cuid for tenant ID
+  id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // --- Relationships ---
+  gradingScale Float @default(100)
+
   auths               Auth[]
   admins              Admin[]
   teachers            Teacher[]
@@ -22,7 +23,7 @@ model School {
   students            Student[]
   grades              Grade[]
   classes             Class[]
-  subjects            Subject[] // Assuming Subject is per-school
+  subjects            Subject[]
   lessons             Lesson[]
   exams               Exam[]
   assignments         Assignment[]
@@ -32,46 +33,56 @@ model School {
   announcements       Announcement[]
   teacherAvailability TeacherAvailability[]
 
-  // NEW: Relation to SchoolSubscriptions
+  // Scheduling (Phase 2/3/5)
+  terms              Term[]
+  periods            Period[]
+  calendarExceptions SchoolCalendarException[]
+  lessonSessions     LessonSession[]
+  examTemplates      ExamTemplate[]
+
   subscriptions SchoolSubscription[]
 
-  stripeCustomerId String? @unique // New field for Stripe Customer ID
+  stripeCustomerId String? @unique
 
-  // --- Academic Year Relations ---
   academicYears        AcademicYear[] @relation("SchoolAcademicYears")
   activeAcademicYearId String?        @unique
   activeAcademicYear   AcademicYear?  @relation("ActiveSchoolYear", fields: [activeAcademicYearId], references: [id], onDelete: SetNull)
 
-  // --- Curriculum Relations ---
   curricula Curriculum[]
 
   scheduleChangeRequests ScheduleChangeRequest[]
 
-  // --- NEW: Relation to Rooms ---
   rooms Room[] @relation("SchoolRooms")
+
+  gradingScales  GradingScale[]
+  promotionRules PromotionRules[]
+  joinCodes      JoinCode[]
+  memberships    SchoolMembership[]
 
   @@index([name])
 }
 
 model Auth {
-  id        String   @id @default(cuid())
-  username  String   @unique // Added for login, primary identifier if email is null
-  email     String?  @unique // Made optional, but still unique if provided
-  password  String
-  role      String // "admin" (school admin), "teacher", "student", "parent", "system_admin"
-  schoolId  String? // Optional: Null for system_admin, required for other roles tied to a school
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  id          String      @id @default(cuid())
+  username    String      @unique
+  email       String?     @unique
+  password    String
+  role        String
+  schoolId    String?
+  accountType AccountType @default(SCHOOL_ADMIN)
+  displayName String?
+  avatarUrl   String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @default(now()) @updatedAt
 
-  // Relations
-  admin   Admin?
-  teacher Teacher?
-  student Student?
-  parent  Parent?
-  school  School?  @relation(fields: [schoolId], references: [id]) // This relation is optional for system_admin
+  admin       Admin?
+  teacher     Teacher?
+  student     Student?
+  parent      Parent?
+  school      School?     @relation(fields: [schoolId], references: [id])
 
-  // NEW: SystemAdmin profile (optional, only if role is "system_admin")
   systemAdmin SystemAdmin?
+  memberships SchoolMembership[]
 
   @@index([email])
   @@index([role])
@@ -79,17 +90,17 @@ model Auth {
 
 model Admin {
   id       String  @id @default(cuid())
-  username String  @unique // This is Admin.username
-  name     String? // NEW: Admin's first name
-  surname  String? // NEW: Admin's last name
-  phone    String? // NEW: Admin's phone number
-  img      String? // NEW: Admin's profile image URL
+  username String  @unique
+  name     String?
+  surname  String?
+  phone    String?
+  img      String?
   authId   String  @unique
   auth     Auth    @relation(fields: [authId], references: [id])
 
-  // --- Relation to School ---
-  schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId   String
+  school     School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  membership SchoolMembership?
 }
 
 model Student {
@@ -108,15 +119,12 @@ model Student {
   authId    String   @unique
   auth      Auth     @relation(fields: [authId], references: [id])
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   parentId String
   parent   Parent @relation(fields: [parentId], references: [id])
 
-  // classId and gradeId now represent current enrollment, history is in StudentEnrollmentHistory
   classId Int?
   class   Class? @relation(fields: [classId], references: [id], onDelete: SetNull)
 
@@ -126,8 +134,8 @@ model Student {
   attendances Attendance[]
   results     Result[]
 
-  // --- Enrollment History ---
   enrollmentHistory StudentEnrollmentHistory[]
+  membership        SchoolMembership?
 }
 
 model Teacher {
@@ -146,18 +154,20 @@ model Teacher {
   authId    String   @unique
   auth      Auth     @relation(fields: [authId], references: [id])
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   subjects     Subject[]
   lessons      Lesson[]
+  lessonSessions LessonSession[]
   classes      Class[]
   availability TeacherAvailability[]
 
   requestedChanges ScheduleChangeRequest[] @relation("RequestedChanges")
-  proposedSwaps ScheduleChangeRequest[] @relation("ProposedSwaps")
+  proposedSwaps    ScheduleChangeRequest[] @relation("ProposedSwaps")
+  membership       SchoolMembership?
+
+  examTemplates  ExamTemplate[]
 }
 
 model Parent {
@@ -172,28 +182,28 @@ model Parent {
   authId    String   @unique
   auth      Auth     @relation(fields: [authId], references: [id])
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
-  students Student[]
+  students   Student[]
+  membership SchoolMembership?
 }
 
 model Grade {
   id    Int    @id @default(autoincrement())
   level String
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   students Student[]
   classes  Class[]
 
-  // --- Curriculum Relation ---
   curriculumSubjects Curriculum[]
+  promotionRules     PromotionRules[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([level, schoolId])
 }
@@ -203,19 +213,17 @@ model Class {
   name     String
   capacity Int
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Relation to Academic Year ---
   academicYearId String
   academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   supervisorId String?
   supervisor   Teacher? @relation(fields: [supervisorId], references: [id])
 
   lessons  Lesson[]
+  lessonSessions LessonSession[]
   students Student[]
 
   gradeId Int
@@ -224,8 +232,13 @@ model Class {
   events        Event[]
   announcements Announcement[]
 
-  // --- Enrollment History ---
   enrollmentHistory StudentEnrollmentHistory[]
+  joinCodes         JoinCode[]
+
+  examTemplates  ExamTemplate[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([name, schoolId, academicYearId])
 }
@@ -234,16 +247,18 @@ model Subject {
   id   Int    @id @default(autoincrement())
   name String
 
-  // --- Relation to School ---
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   teachers Teacher[]
   lessons  Lesson[]
+  lessonSessions LessonSession[]
+  examTemplates ExamTemplate[]
 
-  // --- Curriculum Relation ---
   curriculumGrades Curriculum[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([name, schoolId])
 }
@@ -255,11 +270,13 @@ model Lesson {
   startTime DateTime
   endTime   DateTime
 
-  // --- Relation to School ---
+  // Phase 3: optional mapping to a bell schedule period (time block)
+  periodId String?
+  period   Period? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   subjectId Int
   subject   Subject @relation(fields: [subjectId], references: [id])
 
@@ -269,15 +286,97 @@ model Lesson {
   teacherId String
   teacher   Teacher @relation(fields: [teacherId], references: [id])
 
-  // --- NEW: Relation to Physical Room ---
-  roomId    Int?     // Optional: The physical room where the lesson takes place
-  room      Room?    @relation("RoomLessons", fields: [roomId], references: [id], onDelete: SetNull)
+  roomId Int?
+  room   Room? @relation("RoomLessons", fields: [roomId], references: [id], onDelete: SetNull)
+
+  // Phase 5: generated dated sessions
+  lessonSessions LessonSession[]
 
   exams       Exam[]
   assignments Assignment[]
   attendances Attendance[]
 
   scheduleChangeRequests ScheduleChangeRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Phase 5: generated dated lesson instance (one per template lesson per session date)
+model LessonSession {
+  id Int @id @default(autoincrement())
+
+  termId String
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  templateLessonId Int
+  templateLesson   Lesson @relation(fields: [templateLessonId], references: [id], onDelete: Cascade)
+
+  sessionDate DateTime
+  day Day
+
+  name String
+  startTime DateTime
+  endTime DateTime
+
+  subjectId Int
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  classId Int
+  class   Class @relation(fields: [classId], references: [id])
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id])
+
+  roomId Int?
+  room   Room? @relation("RoomLessonSessions", fields: [roomId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([templateLessonId, sessionDate])
+  @@index([termId, sessionDate])
+  @@index([schoolId, classId, sessionDate])
+  @@index([schoolId, teacherId, sessionDate])
+}
+
+// Phase 5: weekly exam template generates Exam rows for each date in a Term
+model ExamTemplate {
+  id String @id @default(cuid())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  termId String
+  term   Term @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  title String?
+
+  day Day
+  startTime DateTime
+  endTime DateTime
+
+  classId Int
+  class   Class @relation(fields: [classId], references: [id])
+
+  subjectId Int
+  subject   Subject @relation(fields: [subjectId], references: [id])
+
+  teacherId String?
+  teacher   Teacher? @relation(fields: [teacherId], references: [id], onDelete: SetNull)
+
+  roomId Int?
+  room   Room? @relation("RoomExamTemplates", fields: [roomId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  exams Exam[]
+
+  @@index([termId, day, classId])
 }
 
 model Exam {
@@ -285,16 +384,30 @@ model Exam {
   title     String
   startTime DateTime
   endTime   DateTime
+  maxScore  Float    @default(100)
+  weight    Float    @default(1.0)
 
-  // --- Relation to School ---
   schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   results Result[]
 
   lessonId Int?
   lesson   Lesson? @relation(fields: [lessonId], references: [id])
+
+  // Phase 5: generated exam instances
+  termId String?
+  term   Term? @relation(fields: [termId], references: [id], onDelete: SetNull)
+
+  examTemplateId String?
+  examTemplate   ExamTemplate? @relation(fields: [examTemplateId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([termId])
+  @@index([examTemplateId])
+  @@unique([examTemplateId, startTime])
 }
 
 model Assignment {
@@ -302,16 +415,19 @@ model Assignment {
   title     String
   dueDate   DateTime
   startDate DateTime
+  maxScore  Float    @default(100)
+  weight    Float    @default(1.0)
 
-  // --- Relation to School ---
   schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   results Result[]
 
   lessonId Int?
   lesson   Lesson? @relation(fields: [lessonId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Result {
@@ -320,11 +436,9 @@ model Result {
   comments       String?
   submissionDate DateTime @default(now())
 
-  // --- Relation to School ---
   schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   studentId String
   student   Student @relation(fields: [studentId], references: [id])
 
@@ -334,28 +448,36 @@ model Result {
   assignmentId Int?
   assignment   Assignment? @relation(fields: [assignmentId], references: [id])
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([studentId])
   @@index([examId])
   @@index([assignmentId])
 }
 
 model Attendance {
-  id     Int      @id @default(autoincrement())
+  id     Int              @id @default(autoincrement())
   date   DateTime
-  status String // e.g., Present, Absent, Late
+  status AttendanceStatus
 
-  // --- Relation to School ---
   schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
   studentId String
   student   Student @relation(fields: [studentId], references: [id])
 
   lessonId Int
   lesson   Lesson @relation(fields: [lessonId], references: [id])
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([studentId, date])
+  @@index([academicYearId])
 }
 
 model Event {
@@ -365,21 +487,17 @@ model Event {
   startTime   DateTime
   endTime     DateTime
 
-  // --- Relation to School --
-  schoolId    String
-  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // Relation to Class (optional, an event might be for a specific class or school-wide)
-  classId     Int?
-  class       Class?   @relation(fields: [classId], references: [id], onDelete: Cascade) // Or SetNull if event can exist without class
+  classId Int?
+  class   Class? @relation(fields: [classId], references: [id], onDelete: Cascade)
 
-  // --- NEW: Relation to Physical Room ---
-  roomId      Int?     // Optional: The physical room where the event takes place
-  room        Room?    @relation("RoomEvents", fields: [roomId], references: [id], onDelete: SetNull)
+  roomId Int?
+  room   Room? @relation("RoomEvents", fields: [roomId], references: [id], onDelete: SetNull)
 
-  // Add any other relevant fields for events
-  // e.g., eventType (Meeting, Holiday, Sports, etc.)
-
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Announcement {
@@ -387,14 +505,13 @@ model Announcement {
   title     String
   content   String
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // --- Relation to School ---
   schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade) // Added
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  // --- Other Relations ---
   classId Int?
-  class   Class? @relation(fields: [classId], references: [id]) // Optional: for class-specific announcements
+  class   Class? @relation(fields: [classId], references: [id])
 }
 
 model SystemAdmin {
@@ -439,10 +556,6 @@ model SchoolSubscription {
   @@index([stripeSubscriptionId])
 }
 
-// ++++++++++++++++++++++++++++++++++++++
-// NEW MODELS START HERE
-// ++++++++++++++++++++++++++++++++++++++
-
 model AcademicYear {
   id         String   @id @default(cuid())
   schoolId   String
@@ -459,17 +572,96 @@ model AcademicYear {
   // Relation to the school that has this as its active year (if any)
   activeForSchool School? @relation("ActiveSchoolYear")
 
-  // Relationships to entities scoped by this academic year
   classes           Class[]
   curricula         Curriculum[]
   enrollmentHistory StudentEnrollmentHistory[]
-  // lessons        Lesson[]      // Lessons are tied via Class
-  // exams          Exam[]        // Exams could be tied here if they are year-wide and not class/lesson specific
-  // assignments    Assignment[]  // Similar to exams
-  // ... other models as needed
+  promotionRules    PromotionRules[]
+  attendances       Attendance[]
+
+  // Scheduling (Phase 2/3/5)
+  terms Term[]
 
   @@unique([schoolId, name])
   @@index([schoolId, isActive])
+}
+
+enum CalendarExceptionType {
+  HOLIDAY
+  BREAK
+  EXAM_PERIOD
+}
+
+// Phase 2: temporal container (e.g., Fall / Spring / Semester)
+model Term {
+  id String @id @default(cuid())
+
+  schoolId String
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  academicYearId String
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  name String
+  startDate DateTime
+  endDate DateTime
+
+  isActive Boolean @default(false)
+  isArchived Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  calendarExceptions SchoolCalendarException[]
+  lessonSessions LessonSession[]
+  examTemplates ExamTemplate[]
+  exams Exam[]
+
+  @@unique([schoolId, academicYearId, name])
+  @@index([schoolId, isActive])
+}
+
+// Phase 3: bell schedule period templates (time blocks)
+model Period {
+  id String @id @default(cuid())
+
+  schoolId String
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  name String // e.g., "Period 1", "Lunch"
+  startTime DateTime
+  endTime DateTime
+  order Int
+  isArchived Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lessonTemplates Lesson[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId, order])
+}
+
+// Phase 2 exceptions: school calendar blocks within a term
+model SchoolCalendarException {
+  id String @id @default(cuid())
+
+  schoolId String
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  termId String
+  term Term @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  title String
+  type CalendarExceptionType @default(HOLIDAY)
+  startDate DateTime
+  endDate DateTime
+  notes String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([termId, type])
 }
 
 model Curriculum {
@@ -483,18 +675,17 @@ model Curriculum {
   subjectId Int
   subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
-  schoolId String // Denormalized from AcademicYear for easier querying/constraints
-  school   School @relation(fields: [schoolId], references: [id], onDelete: NoAction) // Avoid multiple cascade paths
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: NoAction)
 
-  description String? // Syllabus outline, learning objectives, etc.
+  description String?
   textbook    String?
-  // teacherId   String?       // Optionally, assign a lead teacher for this subject in this grade/year
-  // teacher     Teacher?      @relation(fields: [teacherId], references: [id])
+  coefficient Float   @default(1.0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([academicYearId, gradeId, subjectId]) // Ensures a subject is added only once to a grade's curriculum per year
+  @@unique([academicYearId, gradeId, subjectId])
   @@index([schoolId])
   @@index([academicYearId])
   @@index([gradeId])
@@ -509,13 +700,12 @@ model StudentEnrollmentHistory {
   classId Int
   class   Class @relation(fields: [classId], references: [id], onDelete: Cascade)
 
-  // Denormalized from Class for easier querying, ensure it's consistent with Class.academicYearId
   academicYearId String
   academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
-  enrollmentDate DateTime  @default(now())
-  departureDate  DateTime? // Null if currently enrolled in this class/year
-  // status      EnrollmentStatus? // e.g., ENROLLED, PROMOTED, REPEATED, WITHDRAWN (requires enum)
+  enrollmentDate DateTime         @default(now())
+  departureDate  DateTime?
+  status         EnrollmentStatus @default(ENROLLED)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -525,18 +715,6 @@ model StudentEnrollmentHistory {
   @@index([classId])
   @@index([academicYearId])
 }
-
-// enum EnrollmentStatus {
-//   ENROLLED
-//   PROMOTED
-//   REPEATED
-//   WITHDRAWN
-//   COMPLETED
-// }
-
-// ++++++++++++++++++++++++++++++++++++++
-// NEW MODELS END HERE
-// ++++++++++++++++++++++++++++++++++++++
 
 enum UserSex {
   MALE
@@ -563,10 +741,39 @@ enum SubscriptionStatus {
   ACTIVE
   CANCELED
   PAST_DUE
-  INCOMPLETE // For subscriptions that require action, like 3D Secure
+  INCOMPLETE
   INCOMPLETE_EXPIRED
   TRIALING
   UNPAID
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  PROMOTED
+  REPEATED
+  WITHDRAWN
+  COMPLETED
+  GRADUATED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+}
+
+enum AccountType {
+  SCHOOL_ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+  SYSTEM_ADMIN
+}
+
+enum JoinCodeType {
+  CLASS_STUDENT
+  TEACHER_INVITE
+  PARENT_LINK
 }
 
 model TeacherAvailability {
@@ -634,7 +841,104 @@ model ScheduleChangeRequest {
   @@index([status])
 }
 
-// --- NEW: Physical Room/Venue Model ---
+model GradingScale {
+  id        String   @id @default(cuid())
+  schoolId  String
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name      String
+  maxScore  Float
+  isDefault Boolean  @default(false)
+  bands     GradeBand[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([schoolId, name])
+}
+
+model GradeBand {
+  id             String       @id @default(cuid())
+  gradingScaleId String
+  gradingScale   GradingScale @relation(fields: [gradingScaleId], references: [id], onDelete: Cascade)
+  label          String
+  abbreviation   String?
+  minPercentage  Float
+  maxPercentage  Float
+  gpaEquivalent  Float?
+  color          String?
+  isPassing      Boolean
+  order          Int
+
+  @@unique([gradingScaleId, label])
+  @@index([gradingScaleId])
+}
+
+model PromotionRules {
+  id                    String       @id @default(cuid())
+  schoolId              String
+  school                School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  academicYearId        String
+  academicYear          AcademicYear @relation(fields: [academicYearId], references: [id])
+  gradeId               Int?
+  grade                 Grade?       @relation(fields: [gradeId], references: [id])
+  passingThreshold      Float        @default(50)
+  minimumOverallAverage Float        @default(50)
+  maxFailedSubjects     Int          @default(2)
+  minimumAttendance     Float        @default(75)
+  borderlineMargin      Float        @default(5)
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  @@unique([schoolId, academicYearId, gradeId])
+}
+
+model JoinCode {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  schoolId    String
+  school      School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  type        JoinCodeType
+  classId     Int?
+  class       Class?       @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId   String?
+  email       String?
+  maxUses     Int?
+  currentUses Int          @default(0)
+  expiresAt   DateTime?
+  isActive    Boolean      @default(true)
+  createdBy   String
+  createdAt   DateTime     @default(now())
+
+  @@index([code])
+  @@index([schoolId])
+}
+
+model SchoolMembership {
+  id       String  @id @default(cuid())
+  authId   String
+  auth     Auth    @relation(fields: [authId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  role     String
+  isActive Boolean  @default(true)
+  joinedAt DateTime @default(now())
+
+  admin   Admin?   @relation(fields: [adminId], references: [id])
+  adminId String?  @unique
+
+  teacher   Teacher? @relation(fields: [teacherId], references: [id])
+  teacherId String?  @unique
+
+  student   Student? @relation(fields: [studentId], references: [id])
+  studentId String?  @unique
+
+  parent   Parent? @relation(fields: [parentId], references: [id])
+  parentId String? @unique
+
+  @@unique([authId, schoolId, role])
+  @@index([authId])
+  @@index([schoolId])
+}
+
 model Room {
   id          Int     @id @default(autoincrement())
   name        String  // e.g., "Computer Lab A", "Science Lab 1", "Library Section B"
@@ -646,7 +950,10 @@ model Room {
 
   // Relationships
   lessons     Lesson[] @relation("RoomLessons") // All lessons scheduled in this room
+  lessonSessions LessonSession[] @relation("RoomLessonSessions")
   events      Event[]  @relation("RoomEvents")  // All events scheduled in this room
+
+  examTemplates ExamTemplate[] @relation("RoomExamTemplates")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

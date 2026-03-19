@@ -4,6 +4,7 @@ import { hashPassword } from "@/lib/auth";
 import { z } from "zod";
 
 const signUpSchema = z.object({
+  username: z.string().min(3, { message: "Username must be at least 3 characters long" }).max(30, { message: "Username must be at most 30 characters long" }),
   email: z.string().email({ message: "Invalid email address" }),
   password: z.string().min(8, { message: "Password must be at least 8 characters long" }),
 });
@@ -21,39 +22,39 @@ export async function POST(request: Request) {
       );
     }
 
-    const { email, password } = validation.data;
+    const { username, email, password } = validation.data;
 
-    // Check if user already exists
-    const existingUser = await prisma.auth.findUnique({
-      where: { email },
-    });
+    const [existingEmail, existingUsername] = await Promise.all([
+      prisma.auth.findUnique({ where: { email } }),
+      prisma.auth.findUnique({ where: { username } }),
+    ]);
 
-    if (existingUser) {
+    if (existingEmail) {
       return NextResponse.json(
         { error: "An account with this email already exists." },
-        { status: 409 } // 409 Conflict
+        { status: 409 }
       );
     }
 
-    // Hash the password
+    if (existingUsername) {
+      return NextResponse.json(
+        { error: "This username is already taken." },
+        { status: 409 }
+      );
+    }
+
     const hashedPassword = await hashPassword(password);
 
-    // Create new Auth record
-    // For a generic sign-up, schoolId will be null initially.
-    // The role might be a default one, or handled in a subsequent step.
-    // Let's assume a default role like 'admin' for now, for users who sign up to create a school.
-    // This can be adjusted based on your application flow.
     const newUser = await prisma.auth.create({
       data: {
         email,
-        username: email, // Use email as username
+        username,
         password: hashedPassword,
-        role: "admin", // Default role for new sign-ups, adjust as needed
-        // schoolId will be null by default
+        role: "admin",
+        accountType: "SCHOOL_ADMIN",
       },
     });
 
-    // Return a success response (excluding password)
     return NextResponse.json(
       { message: "User registered successfully", userId: newUser.id, email: newUser.email, role: newUser.role },
       { status: 201 }

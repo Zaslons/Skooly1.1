@@ -23,7 +23,7 @@ const AttendanceForm = ({
 }) => {
   const [students, setStudents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [attendance, setAttendance] = useState<{ [key: string]: boolean }>({});
+  const [attendance, setAttendance] = useState<{ [key: string]: "PRESENT" | "ABSENT" | "LATE" }>({});
 
   const {
     register,
@@ -67,10 +67,9 @@ const AttendanceForm = ({
             new Date(data.date)
           );
 
-          // Create a mapping of studentId to present status
-          const attendanceMap: { [key: string]: boolean } = {};
+          const attendanceMap: { [key: string]: "PRESENT" | "ABSENT" | "LATE" } = {};
           attendanceData.forEach((record: any) => {
-            attendanceMap[record.studentId] = record.present;
+            attendanceMap[record.studentId] = record.status || "PRESENT";
           });
           setAttendance(attendanceMap);
         }
@@ -85,14 +84,12 @@ const AttendanceForm = ({
   }, [data, relatedData, type]);
 
   const onSubmit = handleSubmit((formData) => {
-    // Prepare student attendance data
-    const studentAttendance = Object.entries(attendance).map(([studentId, present]) => ({
+    const studentAttendance = Object.entries(attendance).map(([studentId, status]) => ({
       studentId,
-      present,
+      status,
     }));
 
-    // Set the student attendance data in the form
-    formData.studentAttendance = studentAttendance;
+    formData.studentAttendance = studentAttendance as any;
     
     formAction(formData);
   });
@@ -111,10 +108,10 @@ const AttendanceForm = ({
     }
   }, [state, router, type, onClose]);
 
-  const handleAttendanceChange = (studentId: string, present: boolean) => {
+  const handleAttendanceChange = (studentId: string, status: "PRESENT" | "ABSENT" | "LATE") => {
     setAttendance((prev) => ({
       ...prev,
-      [studentId]: present,
+      [studentId]: status,
     }));
   };
 
@@ -162,14 +159,13 @@ const AttendanceForm = ({
             <thead>
               <tr>
                 <th className="text-left pl-2">Student</th>
-                <th className="text-center">Present</th>
-                <th className="text-center">Absent</th>
+                <th className="text-center">Status</th>
               </tr>
             </thead>
             <tbody>
               {students.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="text-center py-4">
+                  <td colSpan={2} className="text-center py-4">
                     No students found for this lesson
                   </td>
                 </tr>
@@ -178,22 +174,15 @@ const AttendanceForm = ({
                   <tr key={student.id} className="even:bg-gray-50">
                     <td className="py-2 pl-2">{`${student.name} ${student.surname}`}</td>
                     <td className="text-center">
-                      <input
-                        type="radio"
-                        name={`attendance-${student.id}`}
-                        checked={attendance[student.id] === true}
-                        onChange={() => handleAttendanceChange(student.id, true)}
-                        className="w-4 h-4"
-                      />
-                    </td>
-                    <td className="text-center">
-                      <input
-                        type="radio"
-                        name={`attendance-${student.id}`}
-                        checked={attendance[student.id] === false}
-                        onChange={() => handleAttendanceChange(student.id, false)}
-                        className="w-4 h-4"
-                      />
+                      <select
+                        value={attendance[student.id] || "PRESENT"}
+                        onChange={(e) => handleAttendanceChange(student.id, e.target.value as "PRESENT" | "ABSENT" | "LATE")}
+                        className="border border-gray-300 rounded-md px-2 py-1 text-sm"
+                      >
+                        <option value="PRESENT">Present</option>
+                        <option value="ABSENT">Absent</option>
+                        <option value="LATE">Late</option>
+                      </select>
                     </td>
                   </tr>
                 ))

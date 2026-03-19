@@ -63,6 +63,13 @@ const ResultForm = ({
 
   const { students, exams, assignments } = relatedData;
 
+  const watchedExamId = watch("examId");
+  const watchedAssignmentId = watch("assignmentId");
+
+  const selectedMaxScore = resultType === 'exam'
+    ? exams?.find((e: any) => String(e.id) === String(watchedExamId))?.maxScore
+    : assignments?.find((a: any) => String(a.id) === String(watchedAssignmentId))?.maxScore;
+
   return (
     <form className="flex flex-col gap-8" onSubmit={onSubmit}>
       <h1 className="text-xl font-semibold">
@@ -70,14 +77,19 @@ const ResultForm = ({
       </h1>
 
       <div className="flex justify-between flex-wrap gap-4">
-        <InputField
-          label="Score"
-          name="score"
-          defaultValue={data?.score}
-          register={register}
-          error={errors?.score}
-          type="number"
-        />
+        <div className="flex flex-col gap-2 w-full md:w-1/4">
+          <InputField
+            label={selectedMaxScore ? `Score (out of ${selectedMaxScore})` : "Score"}
+            name="score"
+            defaultValue={data?.score}
+            register={register}
+            error={errors?.score}
+            type="number"
+          />
+          {selectedMaxScore && (
+            <p className="text-xs text-gray-400">Max: {selectedMaxScore}</p>
+          )}
+        </div>
         
         <div className="flex flex-col gap-2 w-full md:w-1/4">
           <label className="text-xs text-gray-500">Student</label>
