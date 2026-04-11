@@ -1,7 +1,8 @@
 import { getServerUser } from "@/lib/auth";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import prisma from "@/lib/prisma";
 import { redirect } from "next/navigation";
-import { Day } from "@prisma/client";
+import { Day, LessonDeliveryMode } from "@prisma/client";
 import { formatDateTimeToTimeString } from "@/lib/utils";
 
 const ORDERED_DAYS: Day[] = [
@@ -34,7 +35,7 @@ export default async function MySchedulePage({
     );
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return (
       <div className="p-4 text-red-600">
         Access Denied: You are not authorized for this school.
@@ -120,6 +121,37 @@ export default async function MySchedulePage({
     (day) => lessonsByDay[day].length > 0
   );
 
+  type LessonRow = (typeof lessons)[number];
+
+  function MeetingOrRoom({ lesson }: { lesson: LessonRow }) {
+    const online = lesson.deliveryMode === LessonDeliveryMode.ONLINE;
+    if (online) {
+      return (
+        <div className="mt-1 flex flex-col gap-1">
+          <span className="text-xs font-medium text-indigo-600">Online</span>
+          {lesson.meetingUrl ? (
+            <a
+              href={lesson.meetingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-indigo-700 underline font-medium"
+            >
+              {(lesson.meetingLabel && lesson.meetingLabel.trim()) || "Join live session"}
+            </a>
+          ) : (
+            <span className="text-xs text-gray-500">Meeting link not set yet</span>
+          )}
+        </div>
+      );
+    }
+    if (lesson.room) {
+      return (
+        <p className="text-sm text-gray-500 mt-1">• Room {lesson.room.name}</p>
+      );
+    }
+    return null;
+  }
+
   return (
     <div className="p-4 md:p-6">
       <h1 className="text-2xl font-semibold text-gray-800 mb-6">
@@ -145,10 +177,8 @@ export default async function MySchedulePage({
                   <p className="text-sm text-gray-500">
                     {formatDateTimeToTimeString(lesson.startTime)} –{" "}
                     {formatDateTimeToTimeString(lesson.endTime)}
-                    {lesson.room && (
-                      <span className="ml-2">• Room {lesson.room.name}</span>
-                    )}
                   </p>
+                  <MeetingOrRoom lesson={lesson} />
                 </div>
               ))}
             </div>
@@ -214,11 +244,7 @@ export default async function MySchedulePage({
                               {formatDateTimeToTimeString(lesson.startTime)} –{" "}
                               {formatDateTimeToTimeString(lesson.endTime)}
                             </p>
-                            {lesson.room && (
-                              <p className="text-xs text-gray-500 mt-0.5">
-                                Room {lesson.room.name}
-                              </p>
-                            )}
+                            <MeetingOrRoom lesson={lesson} />
                           </div>
                         ) : (
                           <span className="text-gray-300">—</span>

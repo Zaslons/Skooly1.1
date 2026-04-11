@@ -1,5 +1,6 @@
 import prisma from "@/lib/prisma";
 import { getServerUser } from "@/lib/auth";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { redirect } from "next/navigation";
 import { CalendarCheck, CalendarX, Clock } from "lucide-react";
 import { format } from "date-fns";
@@ -12,7 +13,7 @@ export default async function StudentAttendancePage({
   const { schoolId } = await params;
   const user = await getServerUser();
 
-  if (!user || user.role !== 'student' || user.schoolId !== schoolId) {
+  if (!user || user.role !== 'student' || !(await assertSchoolAccessForServerUser(user, schoolId))) {
     redirect('/');
   }
 

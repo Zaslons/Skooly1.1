@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 // Changed to GET handler and added redirect
 export async function GET(request: NextRequest) { 
   try {

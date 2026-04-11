@@ -118,7 +118,29 @@ const FormContainer = async ({ table, type, data, id, authUser, ...restProps }: 
           },
           select: { id: true, name: true },
         });
-        relatedData = { lessons: examLessons };
+        const examStartDate = data?.startTime ? new Date(data.startTime) : null;
+        const selectedOrActiveTerm = await prisma.term.findFirst({
+          where: {
+            schoolId,
+            ...(data?.termId
+              ? { id: data.termId }
+              : examStartDate
+                ? { startDate: { lte: examStartDate }, endDate: { gte: examStartDate } }
+                : { isActive: true }),
+          },
+          select: { id: true },
+          orderBy: { startDate: "desc" },
+        });
+        const examPeriods = await prisma.schoolCalendarException.findMany({
+          where: {
+            schoolId,
+            type: "EXAM_PERIOD",
+            ...(selectedOrActiveTerm?.id ? { termId: selectedOrActiveTerm.id } : {}),
+          },
+          select: { id: true, title: true, startDate: true, endDate: true },
+          orderBy: { startDate: "asc" },
+        });
+        relatedData = { lessons: examLessons, examPeriods, termId: selectedOrActiveTerm?.id ?? null };
         break;
       case "lesson":
         const lessonSubjects = await prisma.subject.findMany({
@@ -144,7 +166,21 @@ const FormContainer = async ({ table, type, data, id, authUser, ...restProps }: 
           select: { id: true, name: true, type: true, capacity: true },
           orderBy: { name: 'asc' },
         });
-        relatedData = { subjects: lessonSubjects, classes: lessonClasses, teachers: lessonTeachers, rooms: lessonRooms };
+        const lessonPeriods = await prisma.period.findMany({
+          where: { schoolId: schoolId, isArchived: false },
+          orderBy: [{ order: 'asc' }, { name: 'asc' }],
+          select: { id: true, name: true, startTime: true, endTime: true, order: true },
+        });
+        relatedData = {
+          subjects: lessonSubjects,
+          classes: lessonClasses,
+          teachers: lessonTeachers,
+          rooms: lessonRooms,
+          periods: lessonPeriods,
+          periodsOnly: lessonPeriods.length > 0,
+          endPeriodId: data?.endPeriodId ?? data?.endPeriod?.id,
+          schoolId,
+        };
         break;
       case "assignment":
         const assignmentLessons = await prisma.lesson.findMany({
@@ -152,9 +188,23 @@ const FormContainer = async ({ table, type, data, id, authUser, ...restProps }: 
             schoolId: schoolId, // schoolId is confirmed string here
             ...(role === "teacher" ? { teacher: { authId: currentUserId! } } : {}),
           },
-          select: { id: true, name: true },
+          select: {
+            id: true,
+            name: true,
+            classId: true,
+            subjectId: true,
+            day: true,
+            startTime: true,
+            class: { select: { name: true } },
+            subject: { select: { name: true } },
+          },
+          orderBy: [{ name: "asc" }],
         });
-        relatedData = { lessons: assignmentLessons };
+        relatedData = {
+          lessons: assignmentLessons,
+          dueLessons: assignmentLessons,
+          schoolId,
+        };
         break;
       case "result":
         const resultStudents = await prisma.student.findMany({

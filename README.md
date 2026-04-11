@@ -7,7 +7,38 @@ A multi-tenant school management SaaS platform built with Next.js 14, Prisma, Po
 - [System Design Analysis](SYSTEM_DESIGN.md) - Architecture, domain model, auth flow, and diagrams
 - [Ecosystem Roadmap](ECOSYSTEM_ROADMAP.md) - Planned features and development roadmap
 
+### Scheduling
+
+- [Bell schedule implementation](docs/scheduling/BELL_SCHEDULE_IMPLEMENTATION.md) — phases, API, and strict grid (lessons + bell periods)
+- [Documentation index](docs/README.md) — all docs by area
+- [Scheduling assessment task board](SCHEDULING_ASSESSMENT_TASK_BOARD.md) — related roadmap and checklist items
+
 ## Getting Started
+
+### Database (PostgreSQL)
+
+Prisma expects `DATABASE_URL` in `.env` (copy from `.env.example`). The app needs a running PostgreSQL server.
+
+**Option A — Docker (recommended for local dev)**
+
+```bash
+docker compose up -d postgres
+# wait until healthy, then:
+npx prisma migrate deploy
+# or: npx prisma db push
+```
+
+Use:
+
+`DATABASE_URL="postgresql://skooly:skooly@localhost:5432/skooly"`
+
+**Option B — Homebrew / existing Postgres**
+
+Install and start PostgreSQL, create a database, and set `DATABASE_URL` accordingly (often `localhost:5432`).
+
+If you see `Can't reach database server at localhost:5432`, the server is not running or `DATABASE_URL` is wrong.
+
+### Dev server
 
 First, run the development server:
 

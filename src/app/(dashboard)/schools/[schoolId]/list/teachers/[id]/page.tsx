@@ -1,10 +1,10 @@
 import Announcements from "@/components/Announcements";
-import BigCalendarContainer from "@/components/BigCalendarContainer";
-import BigCalendar from "@/components/BigCalender";
+import ReadonlyPeriodGridContainer from "@/components/scheduling/period-grid/ReadonlyPeriodGridContainer";
 import FormContainer from "@/components/FormContainer";
 import Performance from "@/components/Performance";
 import prisma from "@/lib/prisma";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser, teacherWhereByIdInSchool } from "@/lib/schoolAccess";
 import { Teacher } from "@prisma/client";
 import Image from "next/image";
 import Link from "next/link";
@@ -21,7 +21,7 @@ const SingleTeacherPage = async ({
     redirect('/sign-in?message=Please sign in to view this page.');
   }
 
-  if (authUser.schoolId !== routeSchoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, routeSchoolId))) {
     return (
       <div className="flex-1 p-4">
         <h1 className="text-xl font-semibold text-red-600">Access Denied</h1>
@@ -37,10 +37,7 @@ const SingleTeacherPage = async ({
         _count: { subjects: number; lessons: number; classes: number };
       })
     | null = await prisma.teacher.findFirst({
-    where: { 
-        id: id, 
-        schoolId: routeSchoolId
-    },
+    where: teacherWhereByIdInSchool(id, routeSchoolId),
     include: {
       _count: {
         select: {
@@ -55,6 +52,11 @@ const SingleTeacherPage = async ({
   if (!teacher) {
     return notFound();
   }
+  const periods = await prisma.period.findMany({
+    where: { schoolId: routeSchoolId, isArchived: false },
+    select: { id: true, name: true, order: true, startTime: true, endTime: true },
+    orderBy: [{ order: "asc" }, { name: "asc" }],
+  });
   return (
     <div className="flex-1 p-4 flex flex-col gap-4 xl:flex-row">
       {/* LEFT */}
@@ -175,7 +177,12 @@ const SingleTeacherPage = async ({
         {/* BOTTOM */}
         <div className="mt-4 bg-white rounded-md p-4 h-[800px]">
           <h1>Teacher&apos;s Schedule</h1>
-          <BigCalendarContainer type="teacherId" id={teacher.id} schoolId={routeSchoolId} />
+          <ReadonlyPeriodGridContainer
+            scope="teacherId"
+            id={teacher.id}
+            schoolId={routeSchoolId}
+            periods={periods}
+          />
         </div>
       </div>
       {/* RIGHT */}

@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma";
 import Link from "next/link";
 import { CalendarRange } from "lucide-react";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 export default async function AdminAttendancePage({ 
     params
@@ -15,7 +16,7 @@ export default async function AdminAttendancePage({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div className="p-4">Access Denied: You are not authorized for this school.</div>;
   }
 

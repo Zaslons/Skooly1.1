@@ -1,4 +1,5 @@
 import { getVerifiedAuthUser, getTeacherAvailability, deleteTeacherAvailability } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { redirect } from "next/navigation";
 import { TeacherAvailability } from "@prisma/client"; 
 import Link from "next/link"; 
@@ -34,7 +35,7 @@ const TeacherAvailabilityPage = async ({ params }: { params: { schoolId: string 
     return null; 
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return (
       <div className="p-6 text-center">
         <AlertTriangle className="mx-auto h-12 w-12 text-red-500" />

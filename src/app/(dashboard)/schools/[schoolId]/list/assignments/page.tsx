@@ -9,6 +9,7 @@ import { Assignment, Class, Prisma, Subject, Teacher } from "@prisma/client";
 import type { AuthUser } from "@/lib/auth";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { redirect } from 'next/navigation';
 import RowFormModalTrigger from "@/components/RowFormModalTrigger";
 
@@ -17,7 +18,11 @@ type AssignmentList = Assignment & {
     subject: Subject;
     class: Class;
     teacher: Teacher;
-  };
+  } | null;
+  dueLesson: {
+    name: string;
+    startTime: Date;
+  } | null;
 };
 
 const AssignmentListPage = async ({
@@ -34,9 +39,30 @@ const AssignmentListPage = async ({
     return <p>User not authenticated.</p>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <p>Access Denied. You do not have permission to view assignments for this school.</p>;
   }
+
+  const assignmentEditRelated =
+    authUser.role === "admin" || authUser.role === "teacher"
+      ? await prisma.lesson.findMany({
+          where: {
+            schoolId,
+            ...(authUser.role === "teacher" ? { teacher: { authId: authUser.id } } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            classId: true,
+            subjectId: true,
+            day: true,
+            startTime: true,
+            class: { select: { name: true } },
+            subject: { select: { name: true } },
+          },
+          orderBy: [{ name: "asc" }],
+        })
+      : [];
 
   let studentAssignmentsOnly = false;
   let studentClassId: number | undefined = undefined;
@@ -91,13 +117,19 @@ const AssignmentListPage = async ({
       className="border-b border-gray-200 even:bg-slate-50 text-sm hover:bg-lamaPurpleLight"
     >
       <td className="p-4">{item.title}</td>
-      <td className="hidden md:table-cell">{item.lesson.subject.name}</td>
-      <td>{item.lesson.class.name}</td>
+      <td className="hidden md:table-cell">{item.lesson?.subject.name ?? "—"}</td>
+      <td>{item.lesson?.class.name ?? "—"}</td>
       <td className="hidden md:table-cell">
-        {item.lesson.teacher.name + " " + item.lesson.teacher.surname}
+        {item.lesson
+          ? `${item.lesson.teacher.name} ${item.lesson.teacher.surname}`
+          : "—"}
       </td>
       <td className="hidden md:table-cell">
-        {new Intl.DateTimeFormat("en-US").format(new Date(item.dueDate))}
+        {item.dueLesson
+          ? `Due at ${item.dueLesson.name} (${new Intl.DateTimeFormat("en-US").format(
+              new Date(item.dueLesson.startTime)
+            )})`
+          : `Legacy due date: ${new Intl.DateTimeFormat("en-US").format(new Date(item.dueDate))}`}
       </td>
       <td>
         <div className="flex items-center gap-2">
@@ -109,6 +141,11 @@ const AssignmentListPage = async ({
                 itemData={item}
                 authUser={authUser}
                 buttonIcon="/update.png"
+                relatedData={{
+                  lessons: assignmentEditRelated,
+                  dueLessons: assignmentEditRelated,
+                  schoolId,
+                }}
               />
               <RowFormModalTrigger
                 table="assignment"
@@ -186,6 +223,9 @@ const AssignmentListPage = async ({
             teacher: { select: { name: true, surname: true } },
             class: { select: { name: true } },
           },
+        },
+        dueLesson: {
+          select: { name: true, startTime: true },
         },
       },
       take: ITEM_PER_PAGE,

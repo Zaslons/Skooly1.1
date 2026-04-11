@@ -1,5 +1,5 @@
 import Announcements from "@/components/Announcements";
-import BigCalendarContainer from "@/components/BigCalendarContainer";
+import ReadonlyPeriodGridContainer from "@/components/scheduling/period-grid/ReadonlyPeriodGridContainer";
 import FormContainer from "@/components/FormContainer";
 import Performance from "@/components/Performance";
 import StudentAttendanceCard from "@/components/StudentAttendanceCard";
@@ -11,6 +11,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 const SingleStudentPage = async ({
   params: { id: studentId, schoolId },
@@ -23,13 +24,13 @@ const SingleStudentPage = async ({
     return <p>User not authenticated.</p>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <p>Access Denied: You are not authorized for this school.</p>;
   }
 
   const student:
     | (Student & {
-        class: Class & { _count: { lessons: number } };
+        class: (Class & { _count: { lessons: number } }) | null;
         parent: { authId: string | null } | null;
       })
     | null = await prisma.student.findFirst({
@@ -45,6 +46,10 @@ const SingleStudentPage = async ({
 
   if (!student) {
     return notFound();
+  }
+
+  if (!student.class) {
+    return <p>Student is not currently assigned to a class.</p>;
   }
 
   let canViewPage = false;
@@ -78,8 +83,13 @@ const SingleStudentPage = async ({
   }
 
   if (!canViewPage) {
-    return <p>Access Denied: You do not have permission to view this student's details.</p>;
+    return <p>Access Denied: You do not have permission to view this student&apos;s details.</p>;
   }
+  const periods = await prisma.period.findMany({
+    where: { schoolId, isArchived: false },
+    select: { id: true, name: true, order: true, startTime: true, endTime: true },
+    orderBy: [{ order: "asc" }, { name: "asc" }],
+  });
 
   return (
     <div className="flex-1 p-4 flex flex-col gap-4 xl:flex-row">
@@ -198,7 +208,12 @@ const SingleStudentPage = async ({
         {/* BOTTOM */}
         <div className="mt-4 bg-white rounded-md p-4 h-[800px]">
           <h1>Student&apos;s Schedule</h1>
-          <BigCalendarContainer type="classId" id={student.class.id} schoolId={schoolId} />
+          <ReadonlyPeriodGridContainer
+            scope="classId"
+            id={student.class.id}
+            schoolId={schoolId}
+            periods={periods}
+          />
         </div>
       </div>
       {/* RIGHT */}

@@ -1,7 +1,10 @@
 import prisma from '@/lib/prisma';
 import AcademicYearsClient from './AcademicYearsClient'; // Reverted to no .tsx extension
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 import { redirect } from 'next/navigation'; // For redirecting
+import { ensureAcademicYearRolloverForSchool, syncTemporalStatesForSchool } from '@/lib/domain/temporalRules';
+import { buildAutomationSummary } from '@/lib/temporalUiSummary';
 
 // Helper function to fetch academic years (similar to API logic)
 async function getAcademicYears(schoolId: string, includeArchived: boolean = false) {
@@ -15,19 +18,13 @@ async function getAcademicYears(schoolId: string, includeArchived: boolean = fal
       startDate: 'desc',
     },
     include: {
-      // Potentially include related data if needed directly by the list, e.g., _count of classes
-    }
+      terms: {
+        where: includeArchived ? {} : { isArchived: false },
+        select: { id: true, isActive: true, isArchived: true, startDate: true, endDate: true },
+      },
+    },
   });
   return academicYears;
-}
-
-// Helper function to get the active academic year ID for the school
-async function getActiveAcademicYearId(schoolId: string): Promise<string | null> {
-    const school = await prisma.school.findUnique({
-        where: { id: schoolId },
-        select: { activeAcademicYearId: true }
-    });
-    return school?.activeAcademicYearId || null;
 }
 
 interface AcademicYearsPageProps {
@@ -47,17 +44,15 @@ export default async function AcademicYearsPage({ params, searchParams }: Academ
     redirect(`/sign-in?callbackUrl=/schools/${schoolId}/academic-years`); 
   }
 
-  // Check if the user is an admin for this specific school
-  if (currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
-    // Logged in, but not authorized for this page/school
-    // Redirect to a general dashboard or an unauthorized page
-    // Adjust the redirect path as needed
-    redirect('/(dashboard)'); // Or a specific unauthorized page
+  if (currentUser.role !== 'admin' || !(await assertSchoolAccessForServerUser(currentUser, schoolId))) {
+    redirect('/(dashboard)');
   }
   
   const includeArchived = searchParams.includeArchived === 'true';
+  await ensureAcademicYearRolloverForSchool(schoolId);
+  await syncTemporalStatesForSchool(schoolId);
   const initialAcademicYears = await getAcademicYears(schoolId, includeArchived);
-  const activeSchoolAcademicYearId = await getActiveAcademicYearId(schoolId);
+  const automationSummary = buildAutomationSummary(initialAcademicYears);
 
   // We would also fetch any other necessary data for the client component,
   // e.g., dropdown options if forms were directly on this page, but forms will be in modal.
@@ -72,7 +67,7 @@ export default async function AcademicYearsPage({ params, searchParams }: Academ
       <AcademicYearsClient
         schoolId={schoolId}
         initialAcademicYears={JSON.parse(JSON.stringify(initialAcademicYears))} // Serialize date objects
-        activeSchoolAcademicYearId={activeSchoolAcademicYearId}
+        automationSummary={JSON.parse(JSON.stringify(automationSummary))}
         // Pass any other required props
       />
     </div>

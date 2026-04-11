@@ -140,7 +140,7 @@ const BulkImportPage = () => {
                         action={bulkCreateStudents}
                     >
                        <p>Import multiple students and optionally create their parents simultaneously.</p>
-                       <p>Parent username is used for lookup. If a parent with the given username doesn't exist, they will be created using the provided parent details.</p>
+                       <p>Parent username is used for lookup. If a parent with the given username doesn&apos;t exist, they will be created using the provided parent details.</p>
                        <p className="font-semibold">Required Fields:</p>
                        <ul className="list-disc list-inside text-xs">
                             <li>Student: username, password, first/last name, address, blood type, birthday, sex, grade level, class name</li>
@@ -175,7 +175,7 @@ const BulkImportPage = () => {
                     action={bulkCreateResults}
                  >
                      <p>Import multiple results for students.</p>
-                     <p>Provide the student's username and the score.</p>
+                     <p>Provide the student&apos;s username and the score.</p>
                      <p>Specify *either* the exact Exam Title *or* the exact Assignment Title that the score corresponds to. Leave the other title column blank.</p>
                      <p className="font-semibold">Required Column Headers:</p>
                      <ul className="list-disc list-inside text-xs">

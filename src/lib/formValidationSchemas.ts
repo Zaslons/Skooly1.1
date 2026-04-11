@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { Day } from "@prisma/client";
+import {
+  CalendarExceptionType,
+  Day,
+  ExamCategory,
+  LessonDeliveryMode,
+} from "@prisma/client";
 
 export const subjectSchema = z.object({
   id: z.coerce.number().optional(),
@@ -94,10 +99,26 @@ export const examSchema = z.object({
   id: z.coerce.number().optional(),
   title: z.string().min(1, { message: "Title name is required!" }),
   startTime: z.coerce.date({ message: "Start time is required!" }),
-  endTime: z.coerce.date({ message: "End time is required!" }),
+  endTime: z.coerce.date().optional(),
+  durationMinutes: z.coerce
+    .number()
+    .int({ message: "Duration must be a whole number of minutes." })
+    .min(1, { message: "Duration must be at least 1 minute." }),
   lessonId: z.coerce.number({ message: "Lesson is required!" }),
+  examPeriodId: z.string().cuid({ message: "Invalid exam period." }).optional().nullable(),
+  isRecurring: z.coerce.boolean().optional().default(false),
+  examCategory: z.nativeEnum(ExamCategory).default(ExamCategory.COURSE_EXAM),
   maxScore: z.coerce.number().min(1, { message: "Max score must be at least 1" }).default(100),
   weight: z.coerce.number().min(0.1, { message: "Weight must be at least 0.1" }).default(1.0),
+}).superRefine((data, ctx) => {
+  const computedEnd = new Date(data.startTime.getTime() + data.durationMinutes * 60 * 1000);
+  if (data.endTime && data.endTime.getTime() !== computedEnd.getTime()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endTime"],
+      message: "End time must equal start time plus duration.",
+    });
+  }
 });
 
 export type ExamSchema = z.infer<typeof examSchema>;
@@ -124,6 +145,232 @@ export const examTemplateSchema = z.object({
 
 export type ExamTemplateSchema = z.infer<typeof examTemplateSchema>;
 
+// Weekly DS recurring exam builder payload (E3)
+// Payload is intentionally loop-oriented (week-by-week rows).
+const timeOfDaySchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):([0-5]\d)$/, {
+    message: "Start time must be in HH:MM format.",
+  });
+
+export const recurringExamLoopItemSchema = z.object({
+  weekIndex: z.number().int().min(0, { message: "weekIndex must be >= 0." }),
+  day: z.nativeEnum(Day, {
+    errorMap: () => ({ message: "Please select a valid day." }),
+  }),
+  startTime: timeOfDaySchema,
+  durationMinutes: z
+    .number()
+    .int({ message: "durationMinutes must be an integer." })
+    .min(1, { message: "durationMinutes must be at least 1." }),
+
+  classId: z.coerce.number().int({ message: "classId must be a number." }).min(1),
+  subjectId: z.coerce.number().int({ message: "subjectId must be a number." }).min(1),
+
+  roomId: z.coerce.number().int().optional().nullable(),
+  teacherId: z.string().cuid().optional().nullable(),
+});
+
+export type RecurringExamLoopItem = z.infer<typeof recurringExamLoopItemSchema>;
+
+export const recurringExamsPayloadSchema = z.object({
+  termId: z.string().cuid({ message: "Valid term ID is required." }),
+  loops: z.array(recurringExamLoopItemSchema).min(1, { message: "At least one loop row is required." }),
+
+  // Commit controls (preview can also accept this for deterministic output).
+  strictMode: z.coerce.boolean().optional().default(true),
+
+  // Exam defaults applied to created Exam rows.
+  maxScore: z.coerce.number().min(1).optional().default(100),
+  weight: z.coerce.number().min(0.1).optional().default(1.0),
+
+  titlePrefix: z.string().min(1).optional().nullable(),
+});
+
+export type RecurringExamsPayload = z.infer<typeof recurringExamsPayloadSchema>;
+
+export const termSchema = z.object({
+  id: z.string().cuid().optional(),
+  academicYearId: z.string().cuid({ message: "Valid academic year ID is required." }),
+  name: z.string().min(1, { message: "Term name is required." }),
+  startDate: z.coerce.date({ message: "Start date is required." }),
+  endDate: z.coerce.date({ message: "End date is required." }),
+  isActive: z.boolean().optional(),
+  isArchived: z.boolean().optional(),
+}).refine((data) => data.endDate > data.startDate, {
+  message: "Term end date must be after start date.",
+  path: ["endDate"],
+});
+
+export type TermSchema = z.infer<typeof termSchema>;
+
+// E4 Term Lesson Generation Engine (generate-term-schedule)
+export const generateTermScheduleModeSchema = z.enum(["dryRun", "commit"]);
+
+export const generateTermScheduleScopeSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("school") }),
+  z.object({
+    type: z.literal("grade"),
+    gradeId: z.coerce.number().int().positive({ message: "gradeId must be a positive integer." }),
+  }),
+  z.object({
+    type: z.literal("class"),
+    classId: z.coerce.number().int().positive({ message: "classId must be a positive integer." }),
+  }),
+]);
+
+export type GenerateTermScheduleScope = z.infer<typeof generateTermScheduleScopeSchema>;
+
+export const termLessonSkipReasonSchema = z.enum([
+  "HOLIDAY",
+  "BREAK",
+  "EXAM_PERIOD",
+  "ALREADY_EXISTS",
+  "EXAM_CONFLICT",
+  "EXAM_CONFLICT_UNKNOWN",
+  "TEACHER_TIME_CONFLICT",
+]);
+
+export const generateTermScheduleRequestSchema = z.object({
+  termId: z.string().cuid({ message: "Valid term ID is required." }),
+  mode: generateTermScheduleModeSchema,
+  idempotencyKey: z.string().min(1, { message: "idempotencyKey is required." }),
+  scope: generateTermScheduleScopeSchema.optional().default({ type: "school" }),
+  // For rollback validation: fail deterministically at the Nth occurrence in the
+  // generator's deterministic candidate ordering.
+  simulateFailureAtOccurrenceIndex: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional(),
+});
+
+export type GenerateTermScheduleRequest = z.infer<typeof generateTermScheduleRequestSchema>;
+
+export const termLessonConflictDetailSchema = z.object({
+  sessionDate: z.coerce.date(),
+  templateLessonId: z.number().int(),
+  reason: z.enum(["EXAM_CONFLICT_UNKNOWN", "EXAM_CONFLICT", "TEACHER_TIME_CONFLICT"]),
+  overlappingExamIds: z.array(z.number().int()).default([]),
+  overlappingExamLessonIds: z.array(z.number().int()).optional().default([]),
+  overlappingLessonSessionIds: z.array(z.number().int()).optional().default([]),
+});
+
+export const generateTermScheduleSummarySchema = z.object({
+  totalCandidates: z.number().int().nonnegative(),
+  createdCount: z.number().int().nonnegative(),
+  conflictedCount: z.number().int().nonnegative(),
+  skippedByReason: z.record(
+    termLessonSkipReasonSchema,
+    z.number().int().nonnegative()
+  ),
+});
+
+export const generateTermScheduleResponseSchema = z.object({
+  requestId: z.string().min(1),
+  termId: z.string().cuid(),
+  durationMs: z.number().int().nonnegative(),
+  scope: generateTermScheduleScopeSchema,
+  summary: generateTermScheduleSummarySchema,
+  conflicts: z.array(termLessonConflictDetailSchema),
+  /** True when commit reused a prior successful run for the same idempotency key + scope. */
+  idempotentReplay: z.boolean().optional(),
+});
+
+export type GenerateTermScheduleResponse = z.infer<typeof generateTermScheduleResponseSchema>;
+
+/** POST /api/schools/[schoolId]/terms/[termId]/calendar-exceptions */
+export const schoolCalendarExceptionCreateSchema = z.object({
+  title: z.string().min(1, { message: "Title is required." }),
+  type: z.nativeEnum(CalendarExceptionType),
+  startDate: z.coerce.date({ message: "Start date is required." }),
+  endDate: z.coerce.date({ message: "End date is required." }),
+  notes: z.string().max(8000).optional().nullable(),
+});
+
+export type SchoolCalendarExceptionCreateInput = z.infer<typeof schoolCalendarExceptionCreateSchema>;
+
+/** PATCH /api/schools/[schoolId]/terms/[termId]/calendar-exceptions/[exceptionId] */
+export const schoolCalendarExceptionUpdateSchema = z
+  .object({
+    title: z.string().min(1, { message: "Title is required." }).optional(),
+    type: z.nativeEnum(CalendarExceptionType).optional(),
+    startDate: z.coerce.date().optional(),
+    endDate: z.coerce.date().optional(),
+    notes: z.string().max(8000).optional().nullable(),
+  })
+  .refine(
+    (d) => {
+      if (d.startDate != null && d.endDate != null) return d.startDate < d.endDate;
+      return true;
+    },
+    { message: "End date must be after start date.", path: ["endDate"] }
+  );
+
+export type SchoolCalendarExceptionUpdateInput = z.infer<typeof schoolCalendarExceptionUpdateSchema>;
+
+/** Bell schedule — POST /api/schools/[schoolId]/periods */
+export const periodCreateSchema = z
+  .object({
+    name: z.string().min(1, { message: "Period name is required." }),
+    startTime: z.coerce.date({ message: "Start time is required." }),
+    endTime: z.coerce.date({ message: "End time is required." }),
+    /** Omit to append after the current max `order` for the school. */
+    order: z.coerce.number().int().optional(),
+    isArchived: z.boolean().optional(),
+  })
+  .refine((d) => d.startTime < d.endTime, {
+    message: "End time must be after start time.",
+    path: ["endTime"],
+  });
+
+export type PeriodCreateInput = z.infer<typeof periodCreateSchema>;
+
+/** Bell schedule — PATCH /api/schools/[schoolId]/periods/[periodId] */
+export const periodUpdateSchema = z
+  .object({
+    name: z.string().min(1, { message: "Name cannot be empty." }).optional(),
+    startTime: z.coerce.date().optional(),
+    endTime: z.coerce.date().optional(),
+    order: z.coerce.number().int().optional(),
+    isArchived: z.boolean().optional(),
+  })
+  .refine(
+    (d) => {
+      if (d.startTime != null && d.endTime != null) return d.startTime < d.endTime;
+      return true;
+    },
+    { message: "End time must be after start time.", path: ["endTime"] }
+  );
+
+export type PeriodUpdateInput = z.infer<typeof periodUpdateSchema>;
+
+// E5: instance-only edits (LessonSession), never mutates Lesson template
+const optionalHttpUrl = z.preprocess(
+  (val) => (val === "" || val === undefined ? undefined : val === null ? null : val),
+  z.union([z.string().url({ message: "Must be a valid URL." }), z.null()]).optional()
+);
+
+const optionalShortLabel = z.preprocess(
+  (val) => (val === "" || val === undefined ? undefined : val === null ? null : val),
+  z.union([z.string().max(200), z.null()]).optional()
+);
+
+export const lessonSessionInstancePatchSchema = z.object({
+  status: z.enum(["SCHEDULED", "CANCELLED"]).optional(),
+  substituteTeacherId: z.string().cuid().nullable().optional(),
+  overrideRoomId: z.coerce.number().int().positive().nullable().optional(),
+  instanceNotes: z.string().max(2000).nullable().optional(),
+  lastOverrideReason: z.string().max(500).nullable().optional(),
+  // Optional reschedule of this instance only (does not change weekly template)
+  startTime: z.coerce.date().optional(),
+  endTime: z.coerce.date().optional(),
+  meetingUrl: optionalHttpUrl,
+  meetingLabel: optionalShortLabel,
+});
+
+export type LessonSessionInstancePatch = z.infer<typeof lessonSessionInstancePatchSchema>;
+
 export const lessonSchema = z.object({
   id: z.coerce.number().optional(),
   name: z.string().min(1, { message: "Lesson name is required!" }),
@@ -135,19 +382,213 @@ export const lessonSchema = z.object({
   subjectId: z.coerce.number({ message: "Subject is required!" }),
   classId: z.coerce.number({ message: "Class is required!" }),
   teacherId: z.string().min(1, { message: "Teacher is required!" }),
+  deliveryMode: z
+    .nativeEnum(LessonDeliveryMode)
+    .default(LessonDeliveryMode.IN_PERSON),
   roomId: z.coerce.number().optional().nullable(),
+  /** Optional bell schedule period (weekly template); empty string cleared in preprocess */
+  periodId: z.preprocess(
+    (val) => (val === "" || val === null || val === undefined ? undefined : val),
+    z.string().cuid({ message: "Invalid bell period." }).optional()
+  ),
+  /** End period for multi-block (double/triple); null = single period. If set, must differ from periodId. */
+  endPeriodId: z.preprocess(
+    (val) => (val === "" || val === null || val === undefined ? undefined : val),
+    z.string().cuid({ message: "Invalid end period." }).optional().nullable()
+  ),
+  meetingUrl: z.preprocess(
+    (val) => (val === "" || val === null || val === undefined ? null : val),
+    z.union([z.string().url({ message: "Meeting link must be a valid URL." }), z.null()]).optional()
+  ),
+  meetingLabel: z.preprocess(
+    (val) => (val === "" || val === null || val === undefined ? null : val),
+    z.union([z.string().max(200), z.null()]).optional()
+  ),
+}).superRefine((data, ctx) => {
+  if (data.deliveryMode === LessonDeliveryMode.IN_PERSON) {
+    if (data.meetingUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["meetingUrl"],
+        message: "Meeting link is only for online lessons.",
+      });
+    }
+    if (data.meetingLabel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["meetingLabel"],
+        message: "Meeting label is only for online lessons.",
+      });
+    }
+  }
+  if (data.endPeriodId != null && data.endPeriodId !== "") {
+    if (!data.periodId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["endPeriodId"], message: "Start period is required when end period is set." });
+    } else if (data.endPeriodId === data.periodId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["endPeriodId"], message: "End period must differ from start period for multi-block; use single period otherwise." });
+    }
+  }
 });
 
 export type LessonSchema = z.infer<typeof lessonSchema>;
+
+/** Max consecutive periods in one timetable block (greedy assistant). */
+export const TIMETABLE_ASSISTANT_BLOCK_SIZE_MAX = 8;
+
+/** Assisted weekly timetable (see docs/timetable/TIMETABLE_ASSISTANT_MVP.md). */
+const timetableAssistantMeetingUrlField = z.preprocess(
+  (val) => (val === "" || val === null || val === undefined ? null : val),
+  z.union([z.string().url({ message: "Meeting link must be a valid URL." }), z.null()]).optional()
+);
+
+const timetableAssistantMeetingLabelField = z.preprocess(
+  (val) => (val === "" || val === null || val === undefined ? null : val),
+  z.union([z.string().max(200), z.null()]).optional()
+);
+
+function refineTimetableAssistantDeliveryMode(
+  data: {
+    deliveryMode?: LessonDeliveryMode;
+    roomId?: number | null;
+    meetingUrl?: string | null;
+    meetingLabel?: string | null;
+  },
+  ctx: z.RefinementCtx
+) {
+  const mode = data.deliveryMode ?? LessonDeliveryMode.IN_PERSON;
+  if (mode === LessonDeliveryMode.IN_PERSON) {
+    if (data.meetingUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["meetingUrl"],
+        message: "Meeting link is only for online lessons.",
+      });
+    }
+    if (data.meetingLabel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["meetingLabel"],
+        message: "Meeting label is only for online lessons.",
+      });
+    }
+  }
+  if (mode === LessonDeliveryMode.ONLINE && data.roomId != null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["roomId"],
+      message: "Online lessons cannot assign a room in the assistant.",
+    });
+  }
+}
+
+export const timetableAssistantRequirementSchema = z
+  .object({
+    subjectId: z.coerce.number().int().positive(),
+    teacherId: z.string().min(1),
+    periodsPerWeek: z.coerce.number().int().min(1).max(40),
+    blockSize: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(TIMETABLE_ASSISTANT_BLOCK_SIZE_MAX)
+      .optional()
+      .default(1),
+    roomId: z.coerce.number().int().positive().nullable().optional(),
+    deliveryMode: z.nativeEnum(LessonDeliveryMode).optional(),
+    meetingUrl: timetableAssistantMeetingUrlField,
+    meetingLabel: timetableAssistantMeetingLabelField,
+  })
+  .superRefine(refineTimetableAssistantDeliveryMode);
+
+export const timetableAssistantBodySchema = z.object({
+  classId: z.coerce.number().int().positive(),
+  requirements: z.array(timetableAssistantRequirementSchema).min(1).max(50),
+  replaceExistingClassLessons: z.boolean().optional().default(false),
+});
+
+export type TimetableAssistantBody = z.infer<typeof timetableAssistantBodySchema>;
+
+export const timetableAssistantSchoolScopeSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("school") }),
+  z.object({ type: z.literal("grade"), gradeId: z.coerce.number().int().positive() }),
+  z.object({
+    type: z.literal("classIds"),
+    ids: z.array(z.coerce.number().int().positive()).min(1).max(200),
+  }),
+]);
+
+export const timetableAssistantSchoolRequirementSchema = z
+  .object({
+    classId: z.coerce.number().int().positive(),
+    subjectId: z.coerce.number().int().positive(),
+    teacherId: z.string().min(1),
+    periodsPerWeek: z.coerce.number().int().min(1).max(40),
+    blockSize: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(TIMETABLE_ASSISTANT_BLOCK_SIZE_MAX)
+      .optional()
+      .default(1),
+    roomId: z.coerce.number().int().positive().nullable().optional(),
+    deliveryMode: z.nativeEnum(LessonDeliveryMode).optional(),
+    meetingUrl: timetableAssistantMeetingUrlField,
+    meetingLabel: timetableAssistantMeetingLabelField,
+  })
+  .superRefine(refineTimetableAssistantDeliveryMode);
+
+export const timetableAssistantSchoolBodySchema = z.object({
+  scope: timetableAssistantSchoolScopeSchema,
+  requirements: z.array(timetableAssistantSchoolRequirementSchema).min(1).max(200),
+  replaceScope: z.enum(["none", "affected_classes", "school"]).optional().default("none"),
+});
+
+export type TimetableAssistantSchoolBody = z.infer<typeof timetableAssistantSchoolBodySchema>;
+
+/** Class-agnostic requirement row for per-grade timetable templates (whole-school assistant). */
+export const timetableAssistantSchoolTemplateRowSchema = z
+  .object({
+    subjectId: z.coerce.number().int().positive(),
+    teacherId: z.string().min(1),
+    periodsPerWeek: z.coerce.number().int().min(1).max(40),
+    blockSize: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(TIMETABLE_ASSISTANT_BLOCK_SIZE_MAX)
+      .optional()
+      .default(1),
+    roomId: z.coerce.number().int().positive().nullable().optional(),
+    deliveryMode: z.nativeEnum(LessonDeliveryMode).optional(),
+    meetingUrl: timetableAssistantMeetingUrlField,
+    meetingLabel: timetableAssistantMeetingLabelField,
+  })
+  .superRefine(refineTimetableAssistantDeliveryMode);
+
+export const timetableAssistantSchoolTemplateRowsSchema = z
+  .array(timetableAssistantSchoolTemplateRowSchema)
+  .max(200);
+
+export type TimetableAssistantSchoolTemplateRow = z.infer<typeof timetableAssistantSchoolTemplateRowSchema>;
 
 export const assignmentSchema = z.object({
   id: z.coerce.number().optional(),
   title: z.string().min(1, { message: "Title is required!" }),
   startDate: z.coerce.date({ message: "Start date is required!" }),
-  dueDate: z.coerce.date({ message: "Due date is required!" }),
-  lessonId: z.coerce.number({ message: "Lesson is required!" }),
+  /** Legacy override; E6 computes from due lesson + term when omitted. */
+  dueDate: z.coerce.date().optional().nullable(),
+  lessonId: z.coerce.number({ message: "Lesson is required!" }), // source/context lesson
+  dueLessonId: z.coerce.number({ message: "Due lesson is required!" }),
   maxScore: z.coerce.number().min(1, { message: "Max score must be at least 1" }).default(100),
   weight: z.coerce.number().min(0.1, { message: "Weight must be at least 0.1" }).default(1.0),
+}).superRefine((data, ctx) => {
+  if (data.dueDate && data.dueDate < data.startDate) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["dueDate"],
+      message: "Due date cannot be before the start date.",
+    });
+  }
 });
 
 export type AssignmentSchema = z.infer<typeof assignmentSchema>;

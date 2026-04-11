@@ -15,7 +15,7 @@ import { Loader2 } from "lucide-react"; // Added for loading state
 // Import TeacherLesson from the page component where it's defined
 // The path needs to be relative to the current file or use an alias if setup
 // Assuming it's in the parent directory's page.tsx for my-schedule
-import type { TeacherLesson } from "../../app/(dashboard)/schools/[schoolId]/teacher/my-schedule/page"; 
+import type { TeacherLesson } from "@/app/(dashboard)/schools/[schoolId]/teacher/my-schedule/page"; 
 
 // Define a more specific type for teachers passed in props
 interface TeacherWithSubjects {

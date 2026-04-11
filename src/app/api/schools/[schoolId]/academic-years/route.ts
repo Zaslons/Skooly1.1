@@ -2,6 +2,13 @@ import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma'; // Assuming prisma client is in lib
 import { z } from 'zod';
 import { requireAuth, requireRole, requireSchoolAccess, AuthUser, UserRole } from '@/lib/auth'; // Adjusted import path
+import {
+  assertNoAcademicYearOverlap,
+  assertStartBeforeEnd,
+  cloneTermPatternToAcademicYear,
+  ensureAcademicYearRolloverForSchool,
+  TemporalRuleError,
+} from '@/lib/domain/temporalRules';
 
 // Zod schema for validating the request body when creating an Academic Year
 const academicYearSchema = z.object({
@@ -31,6 +38,8 @@ export async function GET(
   const includeArchived = searchParams.get('includeArchived') === 'true';
 
   try {
+    await ensureAcademicYearRolloverForSchool(schoolId);
+
     const whereClause: any = {
       schoolId: schoolId,
     };
@@ -61,15 +70,11 @@ export async function POST(
     return NextResponse.json({ error: 'School ID is required' }, { status: 400 });
   }
 
-  // Authentication and Authorization: Only 'admin' of this school can create
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-
-  // Ensure admin is creating for their own school
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only create academic years for their own school.' }, { status: 403 });
-  }
 
   try {
     const body = await request.json();
@@ -78,20 +83,52 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid input', details: validation.error.flatten().fieldErrors }, { status: 400 });
     }
     const { name, startDate, endDate } = validation.data;
-    if (startDate >= endDate) {
-      return NextResponse.json({ error: 'Start date must be before end date' }, { status: 400 });
+    try {
+      assertStartBeforeEnd(startDate, endDate, 'academicYear');
+      await assertNoAcademicYearOverlap({ schoolId, startDate, endDate });
+    } catch (error) {
+      if (error instanceof TemporalRuleError) {
+        return NextResponse.json(
+          { code: error.code, error: error.message, fieldErrors: error.fieldErrors },
+          { status: 400 }
+        );
+      }
+      throw error;
     }
-    
-    // Optional: Add logic to check for overlapping academic years for the same school if needed
 
-    const newAcademicYear = await prisma.academicYear.create({
-      data: {
-        name,
-        startDate,
-        endDate,
-        schoolId: schoolId,
-        // isActive and isArchived default to false in the schema
-      },
+    const newAcademicYear = await prisma.$transaction(async (tx) => {
+      const created = await tx.academicYear.create({
+        data: {
+          name,
+          startDate,
+          endDate,
+          schoolId: schoolId,
+        },
+      });
+
+      const latestPreviousYear = await tx.academicYear.findFirst({
+        where: {
+          schoolId,
+          isArchived: false,
+          id: { not: created.id },
+        },
+        orderBy: { startDate: "desc" },
+        select: { id: true, startDate: true },
+      });
+
+      if (latestPreviousYear) {
+        await cloneTermPatternToAcademicYear({
+          tx,
+          schoolId,
+          sourceAcademicYearId: latestPreviousYear.id,
+          targetAcademicYearId: created.id,
+          sourceAcademicYearStart: latestPreviousYear.startDate,
+          targetAcademicYearStart: created.startDate,
+          targetAcademicYearEnd: created.endDate,
+        });
+      }
+
+      return created;
     });
 
     return NextResponse.json(newAcademicYear, { status: 201 });
@@ -99,7 +136,10 @@ export async function POST(
     console.error('[ACADEMIC_YEARS_POST]', error);
     if (error.code === 'P2002' && error.meta?.target?.includes('name')) {
       // Unique constraint violation on name (and schoolId)
-      return NextResponse.json({ error: 'An academic year with this name already exists for this school.' }, { status: 409 });
+      return NextResponse.json(
+        { code: 'ACADEMIC_YEAR_NAME_CONFLICT', error: 'An academic year with this name already exists for this school.' },
+        { status: 409 }
+      );
     }
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }

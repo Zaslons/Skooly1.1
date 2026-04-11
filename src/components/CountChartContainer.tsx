@@ -14,14 +14,27 @@ const CountChartContainer = async ({
     return <div className="bg-white rounded-xl w-full h-full p-4">Error: Missing School ID</div>;
   }
 
-  const data = await prisma.student.groupBy({
-    by: ["sex"],
-    where: { schoolId: schoolId }, // <-- Add schoolId filter
-    _count: true,
-  });
+  let boys = 0;
+  let girls = 0;
+  try {
+    const data = await prisma.student.groupBy({
+      by: ["sex"],
+      where: { schoolId: schoolId },
+      _count: true,
+    });
+    boys = data.find((d) => d.sex === "MALE")?._count || 0;
+    girls = data.find((d) => d.sex === "FEMALE")?._count || 0;
+  } catch (e) {
+    console.error("CountChartContainer:", e);
+    return (
+      <div className="bg-white rounded-xl w-full h-full p-4 border border-amber-200 text-sm text-amber-900">
+        <h1 className="text-lg font-semibold mb-2">Students</h1>
+        <p>Could not load student counts. Ensure PostgreSQL is running and <code className="text-xs bg-amber-50 px-1 rounded">DATABASE_URL</code> in <code className="text-xs bg-amber-50 px-1 rounded">.env</code> is correct — see README (Docker: <code className="text-xs bg-amber-50 px-1 rounded">docker compose up -d postgres</code>).</p>
+      </div>
+    );
+  }
 
-  const boys = data.find((d) => d.sex === "MALE")?._count || 0;
-  const girls = data.find((d) => d.sex === "FEMALE")?._count || 0;
+  const total = boys + girls;
 
   return (
     <div className="bg-white rounded-xl w-full h-full p-4">
@@ -38,14 +51,14 @@ const CountChartContainer = async ({
           <div className="w-5 h-5 bg-lamaSky rounded-full" />
           <h1 className="font-bold">{boys}</h1>
           <h2 className="text-xs text-gray-300">
-            Boys ({Math.round((boys / (boys + girls)) * 100)}%)
+            Boys ({total === 0 ? 0 : Math.round((boys / total) * 100)}%)
           </h2>
         </div>
         <div className="flex flex-col gap-1">
           <div className="w-5 h-5 bg-lamaYellow rounded-full" />
           <h1 className="font-bold">{girls}</h1>
           <h2 className="text-xs text-gray-300">
-            Girls ({Math.round((girls / (boys + girls)) * 100)}%)
+            Girls ({total === 0 ? 0 : Math.round((girls / total) * 100)}%)
           </h2>
         </div>
       </div>

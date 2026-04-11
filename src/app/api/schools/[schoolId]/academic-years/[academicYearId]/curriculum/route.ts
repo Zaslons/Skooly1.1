@@ -1,14 +1,14 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 import { z } from 'zod';
-import { requireAuth, requireRole, AuthUser, UserRole } from '@/lib/auth';
+import { requireRole, requireSchoolAccess, AuthUser } from '@/lib/auth';
 
 // Zod schema for validating the request body when creating a Curriculum entry
+// Legacy `textbook` is not accepted here — use CurriculumBook via curriculum actions or PATCH books APIs.
 const curriculumCreateSchema = z.object({
   gradeId: z.number().int().positive({ message: "Valid Grade ID is required" }), // Assuming Grade ID is Int
   subjectId: z.number().int().positive({ message: "Valid Subject ID is required" }), // Assuming Subject ID is Int
   description: z.string().optional(),
-  textbook: z.string().optional(),
 });
 
 // GET handler to fetch curriculum entries for a specific school and academic year
@@ -21,14 +21,12 @@ export async function GET(
     return NextResponse.json({ error: 'School ID and Academic Year ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: User must be an admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only view curriculum for their own school.' }, { status: 403 });
-  }
-  
+
   const { searchParams } = new URL(request.url);
   const gradeIdQuery = searchParams.get('gradeId');
 
@@ -83,13 +81,11 @@ export async function POST(
     return NextResponse.json({ error: 'School ID and Academic Year ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: User must be an admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only manage curriculum for their own school.' }, { status: 403 });
-  }
 
   try {
     // Verify the academic year belongs to the school
@@ -105,7 +101,7 @@ export async function POST(
     if (!validation.success) {
       return NextResponse.json({ error: 'Invalid input', details: validation.error.flatten().fieldErrors }, { status: 400 });
     }
-    const { gradeId, subjectId, description, textbook } = validation.data;
+    const { gradeId, subjectId, description } = validation.data;
 
     // Verify Grade and Subject belong to the same school
     const [grade, subject] = await Promise.all([
@@ -127,7 +123,7 @@ export async function POST(
         gradeId: gradeId,
         subjectId: subjectId,
         description: description,
-        textbook: textbook,
+        textbook: null,
       },
       include: {
         grade: { select: { id: true, level: true } },

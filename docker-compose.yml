@@ -1,27 +1,27 @@
-version: '3.8'
-
 services:
-  postgress:
-    image: postgres:15
-    container_name: postgres_db
-    environment:
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
-      POSTGRES_DB: mydb
+  postgres:
+    image: postgres:16-alpine
     ports:
-      - '5432:5432'
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: skooly
+      POSTGRES_PASSWORD: skooly
+      POSTGRES_DB: skooly
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    
-  app:
-    build: .
-    container_name: nextjs_app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skooly -d skooly"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  timetable-solver:
+    build:
+      context: ./services/timetable-solver
     ports:
-      - '3000:3000'
+      - "8000:8000"
     environment:
-      - DATABASE_URL: postgresql://myuser:mypassword@[YOUR_SERVER_IP]:5432/mydb
-    depends_on:
-      - postgres
+      TIMETABLE_SOLVER_SECRET: ${TIMETABLE_SOLVER_SECRET:-dev-secret}
 
 volumes:
   postgres_data:

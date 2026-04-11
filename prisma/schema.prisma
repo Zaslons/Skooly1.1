@@ -14,6 +14,13 @@ model School {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // E4: used to iterate term dates in local school time.
+  // Store IANA timezone names (e.g. "Africa/Cairo") to correctly handle DST.
+  timezone String @default("UTC")
+
+  /// E7: when false, commit-style scheduling (term generation commit, DS recurring commit) is blocked; dry-runs and reads still allowed.
+  schedulingPipelineEnabled Boolean @default(true)
+
   gradingScale Float @default(100)
 
   auths               Auth[]
@@ -40,6 +47,11 @@ model School {
   lessonSessions     LessonSession[]
   examTemplates      ExamTemplate[]
 
+  termScheduleGenerationLogs TermScheduleGenerationLog[]
+  recurringExamCommitLogs      RecurringExamCommitLog[]
+  lessonSessionOverrideAudits  LessonSessionOverrideAudit[]
+  calendarExceptionAudits      CalendarExceptionAudit[]
+
   subscriptions SchoolSubscription[]
 
   stripeCustomerId String? @unique
@@ -59,6 +71,18 @@ model School {
   joinCodes      JoinCode[]
   memberships    SchoolMembership[]
 
+  timetableGradeTemplates TimetableGradeTemplate[]
+
+  /// ISO 3166-1 alpha-2 (e.g. MA, FR). Used to filter curriculum catalog templates.
+  country         String?
+  /// Normalized slug: national_morocco, ib_myp, custom, etc.
+  teachingSystem  String?
+
+  marketplaceSettings    SchoolMarketplaceSettings?
+  marketplaceInvitations MarketplaceInvitation[]
+  marketplaceEngagements MarketplaceEngagement[]
+  marketplaceNeeds       SchoolMarketplaceNeed[]
+
   @@index([name])
 }
 
@@ -75,11 +99,11 @@ model Auth {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @default(now()) @updatedAt
 
-  admin       Admin?
-  teacher     Teacher?
-  student     Student?
-  parent      Parent?
-  school      School?     @relation(fields: [schoolId], references: [id])
+  admin   Admin?
+  teacher Teacher?
+  student Student?
+  parent  Parent?
+  school  School?  @relation(fields: [schoolId], references: [id])
 
   systemAdmin SystemAdmin?
   memberships SchoolMembership[]
@@ -100,7 +124,7 @@ model Admin {
 
   schoolId   String
   school     School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  membership SchoolMembership?
+  memberships SchoolMembership[]
 }
 
 model Student {
@@ -135,7 +159,7 @@ model Student {
   results     Result[]
 
   enrollmentHistory StudentEnrollmentHistory[]
-  membership        SchoolMembership?
+  memberships       SchoolMembership[]
 }
 
 model Teacher {
@@ -154,20 +178,26 @@ model Teacher {
   authId    String   @unique
   auth      Auth     @relation(fields: [authId], references: [id])
 
-  schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String?
+  school   School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  subjects     Subject[]
-  lessons      Lesson[]
+  subjects       Subject[]
+  lessons        Lesson[]
   lessonSessions LessonSession[]
-  classes      Class[]
-  availability TeacherAvailability[]
+  lessonSessionsAsSubstitute LessonSession[] @relation("LessonSessionSubstitute")
+  classes        Class[]
+  availability   TeacherAvailability[]
 
   requestedChanges ScheduleChangeRequest[] @relation("RequestedChanges")
   proposedSwaps    ScheduleChangeRequest[] @relation("ProposedSwaps")
-  membership       SchoolMembership?
+  memberships      SchoolMembership[]
 
-  examTemplates  ExamTemplate[]
+  examTemplates ExamTemplate[]
+
+  marketplaceProfile      TeacherMarketplaceProfile?
+  marketplaceInvitations  MarketplaceInvitation[]
+  marketplaceEngagements  MarketplaceEngagement[]
+  marketplaceApplications MarketplaceApplication[]
 }
 
 model Parent {
@@ -182,11 +212,11 @@ model Parent {
   authId    String   @unique
   auth      Auth     @relation(fields: [authId], references: [id])
 
-  schoolId String
-  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String?
+  school   School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  students   Student[]
-  membership SchoolMembership?
+  students    Student[]
+  memberships SchoolMembership[]
 }
 
 model Grade {
@@ -202,10 +232,30 @@ model Grade {
   curriculumSubjects Curriculum[]
   promotionRules     PromotionRules[]
 
+  timetableGradeTemplates TimetableGradeTemplate[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([level, schoolId])
+}
+
+/// Whole-school timetable assistant: editable per-grade requirement prototype (no classId in rowsJson).
+model TimetableGradeTemplate {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  gradeId  Int
+  grade    Grade  @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+
+  /// JSON array: { subjectId, teacherId, periodsPerWeek, blockSize, roomId? }[]
+  rowsJson Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([schoolId, gradeId])
+  @@index([schoolId])
 }
 
 model Class {
@@ -222,9 +272,9 @@ model Class {
   supervisorId String?
   supervisor   Teacher? @relation(fields: [supervisorId], references: [id])
 
-  lessons  Lesson[]
+  lessons        Lesson[]
   lessonSessions LessonSession[]
-  students Student[]
+  students       Student[]
 
   gradeId Int
   grade   Grade @relation(fields: [gradeId], references: [id])
@@ -235,7 +285,7 @@ model Class {
   enrollmentHistory StudentEnrollmentHistory[]
   joinCodes         JoinCode[]
 
-  examTemplates  ExamTemplate[]
+  examTemplates ExamTemplate[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -250,10 +300,10 @@ model Subject {
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  teachers Teacher[]
-  lessons  Lesson[]
+  teachers       Teacher[]
+  lessons        Lesson[]
   lessonSessions LessonSession[]
-  examTemplates ExamTemplate[]
+  examTemplates  ExamTemplate[]
 
   curriculumGrades Curriculum[]
 
@@ -273,6 +323,9 @@ model Lesson {
   // Phase 3: optional mapping to a bell schedule period (time block)
   periodId String?
   period   Period? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+  // Multi-period span: end period for double/triple block (null = single period)
+  endPeriodId String?
+  endPeriod   Period? @relation("LessonEndPeriod", fields: [endPeriodId], references: [id], onDelete: SetNull)
 
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -289,17 +342,31 @@ model Lesson {
   roomId Int?
   room   Room? @relation("RoomLessons", fields: [roomId], references: [id], onDelete: SetNull)
 
+  deliveryMode LessonDeliveryMode @default(IN_PERSON)
+
+  /// Live meeting link when `deliveryMode` is ONLINE (e.g. Zoom/Meet).
+  meetingUrl   String?
+  /// Short label shown next to the link (e.g. "Zoom", "Teams").
+  meetingLabel String?
+
   // Phase 5: generated dated sessions
   lessonSessions LessonSession[]
 
-  exams       Exam[]
-  assignments Assignment[]
-  attendances Attendance[]
+  exams          Exam[]
+  // Legacy assignment linkage (source lesson/content lesson)
+  assignments    Assignment[] @relation("AssignmentSourceLesson")
+  // E1 due linkage (assignment due on a specific lesson)
+  dueAssignments Assignment[] @relation("AssignmentDueLesson")
+  attendances    Attendance[]
 
   scheduleChangeRequests ScheduleChangeRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([schoolId, day, teacherId, startTime, endTime])
+  @@index([schoolId, day, classId, startTime, endTime])
+  @@index([schoolId, day, roomId, startTime, endTime])
 }
 
 // Phase 5: generated dated lesson instance (one per template lesson per session date)
@@ -316,11 +383,11 @@ model LessonSession {
   templateLesson   Lesson @relation(fields: [templateLessonId], references: [id], onDelete: Cascade)
 
   sessionDate DateTime
-  day Day
+  day         Day
 
-  name String
+  name      String
   startTime DateTime
-  endTime DateTime
+  endTime   DateTime
 
   subjectId Int
   subject   Subject @relation(fields: [subjectId], references: [id])
@@ -333,6 +400,25 @@ model LessonSession {
 
   roomId Int?
   room   Room? @relation("RoomLessonSessions", fields: [roomId], references: [id], onDelete: SetNull)
+
+  deliveryMode LessonDeliveryMode @default(IN_PERSON)
+
+  meetingUrl   String?
+  meetingLabel String?
+
+  status LessonSessionStatus @default(SCHEDULED)
+
+  substituteTeacherId String?
+  substituteTeacher   Teacher? @relation("LessonSessionSubstitute", fields: [substituteTeacherId], references: [id], onDelete: SetNull)
+
+  overrideRoomId Int?
+  overrideRoom   Room? @relation("LessonSessionOverrideRoom", fields: [overrideRoomId], references: [id], onDelete: SetNull)
+
+  instanceNotes      String?  @db.Text
+  lastOverrideReason String? @db.Text
+  lastOverrideAt     DateTime?
+
+  overrideAudits LessonSessionOverrideAudit[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -351,13 +437,13 @@ model ExamTemplate {
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   termId String
-  term   Term @relation(fields: [termId], references: [id], onDelete: Cascade)
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
 
   title String?
 
-  day Day
+  day       Day
   startTime DateTime
-  endTime DateTime
+  endTime   DateTime
 
   classId Int
   class   Class @relation(fields: [classId], references: [id])
@@ -395,9 +481,16 @@ model Exam {
   lessonId Int?
   lesson   Lesson? @relation(fields: [lessonId], references: [id])
 
+  examPeriodId String?
+  examPeriod   SchoolCalendarException? @relation("ExamPeriodExams", fields: [examPeriodId], references: [id], onDelete: SetNull)
+
+  durationMinutes Int     @default(60)
+  isRecurring     Boolean @default(false)
+  examCategory    ExamCategory @default(COURSE_EXAM)
+
   // Phase 5: generated exam instances
   termId String?
-  term   Term? @relation(fields: [termId], references: [id], onDelete: SetNull)
+  term   Term?   @relation(fields: [termId], references: [id], onDelete: SetNull)
 
   examTemplateId String?
   examTemplate   ExamTemplate? @relation(fields: [examTemplateId], references: [id], onDelete: SetNull)
@@ -405,15 +498,19 @@ model Exam {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([examTemplateId, startTime])
   @@index([termId])
   @@index([examTemplateId])
-  @@unique([examTemplateId, startTime])
+  @@index([schoolId, startTime, endTime])
+  @@index([schoolId, lessonId, startTime, endTime])
+  @@index([schoolId, termId, startTime])
+  @@index([examPeriodId])
 }
 
 model Assignment {
   id        Int      @id @default(autoincrement())
   title     String
-  dueDate   DateTime
+  dueDate   DateTime // Legacy compatibility field (dual-read fallback)
   startDate DateTime
   maxScore  Float    @default(100)
   weight    Float    @default(1.0)
@@ -424,10 +521,17 @@ model Assignment {
   results Result[]
 
   lessonId Int?
-  lesson   Lesson? @relation(fields: [lessonId], references: [id])
+  lesson   Lesson? @relation("AssignmentSourceLesson", fields: [lessonId], references: [id], onDelete: SetNull)
+
+  dueLessonId Int?
+  dueLesson   Lesson? @relation("AssignmentDueLesson", fields: [dueLessonId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([schoolId, dueDate])
+  @@index([schoolId, dueLessonId])
+  @@index([schoolId, lessonId])
 }
 
 model Result {
@@ -566,6 +670,11 @@ model AcademicYear {
   isActive   Boolean  @default(false) // Is this the currently active year for operations?
   isArchived Boolean  @default(false) // Is this year concluded and data archived?
 
+  /// Last curriculum catalog template applied to this year (audit).
+  catalogTemplateId      String?
+  catalogTemplateVersion String?
+  catalogInstalledAt     DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -591,33 +700,149 @@ enum CalendarExceptionType {
   EXAM_PERIOD
 }
 
+// E5: per-generated-session edits (does not mutate Lesson template)
+enum LessonSessionStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+/// Weekly template / session: in-person vs live online (both count toward teacher overlap).
+enum LessonDeliveryMode {
+  IN_PERSON
+  ONLINE
+}
+
+/// E6: distinguishes in-class pop quizzes (calendar badge) from full course exams.
+enum ExamCategory {
+  COURSE_EXAM
+  POP_QUIZ
+}
+
 // Phase 2: temporal container (e.g., Fall / Spring / Semester)
 model Term {
   id String @id @default(cuid())
 
   schoolId String
-  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   academicYearId String
-  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
-  name String
+  name      String
   startDate DateTime
-  endDate DateTime
+  endDate   DateTime
 
-  isActive Boolean @default(false)
+  isActive   Boolean @default(false)
   isArchived Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   calendarExceptions SchoolCalendarException[]
-  lessonSessions LessonSession[]
-  examTemplates ExamTemplate[]
-  exams Exam[]
+  lessonSessions     LessonSession[]
+  examTemplates      ExamTemplate[]
+  exams              Exam[]
+
+  termScheduleGenerationLogs TermScheduleGenerationLog[]
+  recurringExamCommitLogs    RecurringExamCommitLog[]
+  calendarExceptionAudits    CalendarExceptionAudit[]
 
   @@unique([schoolId, academicYearId, name])
   @@index([schoolId, isActive])
+}
+
+// E4: audit trail for term lesson generation runs (dry-run + commit)
+model TermScheduleGenerationLog {
+  id String @id @default(cuid())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  termId String
+  term   Term @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  requestId     String
+  idempotencyKey  String
+  mode            String // dryRun | commit
+  scopeType       String // school | grade | class
+  scopeGradeId    Int?
+  scopeClassId    Int?
+
+  durationMs  Int
+  success     Boolean @default(true)
+  errorCode   String?
+
+  // Full summary payload (counts, skippedByReason, conflict list length / snapshot)
+  summaryJson String @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([schoolId, termId, createdAt])
+  @@index([schoolId, idempotencyKey, mode])
+}
+
+/// E7: audit trail for DS recurring exam commit runs.
+model RecurringExamCommitLog {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  termId String
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  requestId    String
+  durationMs   Int
+  success      Boolean @default(true)
+  examsCreated Int     @default(0)
+  errorCode    String?
+  summaryJson  String  @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([schoolId, termId, createdAt])
+}
+
+/// E7: immutable audit rows for admin lesson-session instance overrides (PATCH).
+model LessonSessionOverrideAudit {
+  id String @id @default(cuid())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  lessonSessionId Int
+  lessonSession   LessonSession @relation(fields: [lessonSessionId], references: [id], onDelete: Cascade)
+
+  actorAuthId String?
+  patchJson   String  @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([schoolId, createdAt])
+  @@index([lessonSessionId])
+}
+
+/// Calendar exception mutation audit rows (create/update/delete).
+model CalendarExceptionAudit {
+  id String @id @default(cuid())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  termId String
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  exceptionId String?
+  exception   SchoolCalendarException? @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
+
+  actorAuthId String?
+  operation   String
+  beforeJson  String? @db.Text
+  afterJson   String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([schoolId, termId, createdAt])
+  @@index([exceptionId, createdAt])
 }
 
 // Phase 3: bell schedule period templates (time blocks)
@@ -625,18 +850,19 @@ model Period {
   id String @id @default(cuid())
 
   schoolId String
-  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  name String // e.g., "Period 1", "Lunch"
-  startTime DateTime
-  endTime DateTime
-  order Int
-  isArchived Boolean @default(false)
+  name       String // e.g., "Period 1", "Lunch"
+  startTime  DateTime
+  endTime    DateTime
+  order      Int
+  isArchived Boolean  @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  lessonTemplates Lesson[]
+  lessonTemplates    Lesson[]
+  lessonTemplatesEnd Lesson[] @relation("LessonEndPeriod")
 
   @@unique([schoolId, name])
   @@index([schoolId, order])
@@ -647,19 +873,22 @@ model SchoolCalendarException {
   id String @id @default(cuid())
 
   schoolId String
-  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   termId String
-  term Term @relation(fields: [termId], references: [id], onDelete: Cascade)
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
 
-  title String
-  type CalendarExceptionType @default(HOLIDAY)
+  title     String
+  type      CalendarExceptionType @default(HOLIDAY)
   startDate DateTime
-  endDate DateTime
-  notes String? @db.Text
+  endDate   DateTime
+  notes     String?               @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  exams Exam[] @relation("ExamPeriodExams")
+  audits CalendarExceptionAudit[]
 
   @@index([termId, type])
 }
@@ -678,9 +907,17 @@ model Curriculum {
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: NoAction)
 
-  description String?
-  textbook    String?
-  coefficient Float   @default(1.0)
+  description      String?
+  /// Deprecated: use `CurriculumBook`. Retained for DB compatibility; new writes go through Books.
+  textbook         String?
+  /// Free-form units/chapters/pacing (Markdown-friendly in UI).
+  syllabusOutline  String? @db.Text
+  syllabusUrl      String?
+  coefficient      Float   @default(1.0)
+  /// Optional weekly period count for timetable planning (nullable = not specified).
+  periodsPerWeek   Int?
+
+  books CurriculumBook[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -690,6 +927,35 @@ model Curriculum {
   @@index([academicYearId])
   @@index([gradeId])
   @@index([subjectId])
+}
+
+enum CurriculumBookRole {
+  primary
+  supplementary
+  workbook
+  reader
+  teacher
+  digital
+  other
+}
+
+/// Teaching resources linked to one curriculum row (year × grade × subject).
+model CurriculumBook {
+  id           String             @id @default(cuid())
+  curriculumId String
+  curriculum   Curriculum         @relation(fields: [curriculumId], references: [id], onDelete: Cascade)
+  sortOrder    Int                @default(0)
+  title        String
+  authors      String?
+  isbn         String?
+  publisher    String?
+  edition      String?
+  role         CurriculumBookRole @default(primary)
+  notes        String?            @db.Text
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([curriculumId])
 }
 
 model StudentEnrollmentHistory {
@@ -778,10 +1044,10 @@ enum JoinCodeType {
 
 model TeacherAvailability {
   id          String   @id @default(cuid())
-  dayOfWeek   Day      // MONDAY, TUESDAY, etc.
+  dayOfWeek   Day // MONDAY, TUESDAY, etc.
   startTime   DateTime // Store as full DateTime, but only time part is relevant for daily availability
   endTime     DateTime // Store as full DateTime, but only time part is relevant for daily availability
-  isAvailable Boolean  // True if available, False if this is a blocked/unavailable slot
+  isAvailable Boolean // True if available, False if this is a blocked/unavailable slot
   notes       String?  @db.Text
 
   teacherId String
@@ -813,26 +1079,26 @@ enum RequestStatus {
 
 // NEW Model for ScheduleChangeRequest
 model ScheduleChangeRequest {
-  id                  String             @id @default(cuid())
-  requestingTeacherId String
-  requestingTeacher   Teacher            @relation("RequestedChanges", fields: [requestingTeacherId], references: [id], onDelete: Cascade)
-  lessonId            Int
-  lesson              Lesson             @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  requestedChangeType ScheduleChangeType
-  proposedStartTime   DateTime?          // For TIME_CHANGE
-  proposedEndTime     DateTime?          // For TIME_CHANGE
-  proposedDay         Day?               // For TIME_CHANGE, uses existing Day enum
-  proposedSwapTeacherId String?            // For SWAP
-  proposedSwapTeacher Teacher?           @relation("ProposedSwaps", fields: [proposedSwapTeacherId], references: [id], onDelete: NoAction, onUpdate: NoAction) // Nullable, NoAction to avoid cycles on delete
-  reason              String             @db.Text
-  status              RequestStatus      @default(PENDING)
-  adminNotes          String?            @db.Text
+  id                    String             @id @default(cuid())
+  requestingTeacherId   String
+  requestingTeacher     Teacher            @relation("RequestedChanges", fields: [requestingTeacherId], references: [id], onDelete: Cascade)
+  lessonId              Int
+  lesson                Lesson             @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  requestedChangeType   ScheduleChangeType
+  proposedStartTime     DateTime? // For TIME_CHANGE
+  proposedEndTime       DateTime? // For TIME_CHANGE
+  proposedDay           Day? // For TIME_CHANGE, uses existing Day enum
+  proposedSwapTeacherId String? // For SWAP
+  proposedSwapTeacher   Teacher?           @relation("ProposedSwaps", fields: [proposedSwapTeacherId], references: [id], onDelete: NoAction, onUpdate: NoAction) // Nullable, NoAction to avoid cycles on delete
+  reason                String             @db.Text
+  status                RequestStatus      @default(PENDING)
+  adminNotes            String?            @db.Text
 
-  schoolId            String
-  school              School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([requestingTeacherId])
   @@index([lessonId])
@@ -842,15 +1108,15 @@ model ScheduleChangeRequest {
 }
 
 model GradingScale {
-  id        String   @id @default(cuid())
+  id        String      @id @default(cuid())
   schoolId  String
-  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  school    School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   name      String
   maxScore  Float
-  isDefault Boolean  @default(false)
+  isDefault Boolean     @default(false)
   bands     GradeBand[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
 
   @@unique([schoolId, name])
 }
@@ -913,45 +1179,50 @@ model JoinCode {
 }
 
 model SchoolMembership {
-  id       String  @id @default(cuid())
+  id       String   @id @default(cuid())
   authId   String
-  auth     Auth    @relation(fields: [authId], references: [id], onDelete: Cascade)
+  auth     Auth     @relation(fields: [authId], references: [id], onDelete: Cascade)
   schoolId String
-  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  school   School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   role     String
   isActive Boolean  @default(true)
   joinedAt DateTime @default(now())
 
-  admin   Admin?   @relation(fields: [adminId], references: [id])
-  adminId String?  @unique
+  admin   Admin?  @relation(fields: [adminId], references: [id])
+  adminId String?
 
   teacher   Teacher? @relation(fields: [teacherId], references: [id])
-  teacherId String?  @unique
+  teacherId String?
 
   student   Student? @relation(fields: [studentId], references: [id])
-  studentId String?  @unique
+  studentId String?
 
   parent   Parent? @relation(fields: [parentId], references: [id])
-  parentId String? @unique
+  parentId String?
 
   @@unique([authId, schoolId, role])
   @@index([authId])
   @@index([schoolId])
+  @@index([adminId])
+  @@index([teacherId])
+  @@index([studentId])
+  @@index([parentId])
 }
 
 model Room {
   id          Int     @id @default(autoincrement())
-  name        String  // e.g., "Computer Lab A", "Science Lab 1", "Library Section B"
+  name        String // e.g., "Computer Lab A", "Science Lab 1", "Library Section B"
   type        String? // e.g., "Lab", "Standard Classroom", "Auditorium", "Gym"
-  capacity    Int?    // Max number of occupants
+  capacity    Int? // Max number of occupants
   description String? // Any other relevant details (e.g., "Has 20 PCs", "Projector available")
   schoolId    String
   school      School  @relation("SchoolRooms", fields: [schoolId], references: [id], onDelete: Cascade)
 
   // Relationships
-  lessons     Lesson[] @relation("RoomLessons") // All lessons scheduled in this room
+  lessons        Lesson[]        @relation("RoomLessons") // All lessons scheduled in this room
   lessonSessions LessonSession[] @relation("RoomLessonSessions")
-  events      Event[]  @relation("RoomEvents")  // All events scheduled in this room
+  lessonSessionOverrides LessonSession[] @relation("LessonSessionOverrideRoom")
+  events         Event[]         @relation("RoomEvents") // All events scheduled in this room
 
   examTemplates ExamTemplate[] @relation("RoomExamTemplates")
 
@@ -959,4 +1230,180 @@ model Room {
   updatedAt DateTime @updatedAt
 
   @@unique([name, schoolId]) // Room names should be unique within a school
+}
+
+// ─── Teacher Marketplace ────────────────────────────────────────────────────
+
+model TeacherMarketplaceProfile {
+  id        String  @id @default(cuid())
+  teacherId String  @unique
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  headline        String?
+  bio             String?  @db.Text
+  yearsOfExp      Int?
+  hourlyRate      Float?
+  currency        String   @default("MAD")
+  isPublished     Boolean  @default(false)
+
+  subjectTags     String[]
+  availableDays   String[]
+  maxHoursPerWeek Int?
+
+  city              String?
+  country           String?  @default("Morocco")
+  willingToRelocate Boolean  @default(false)
+  offersOnline      Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SchoolMarketplaceSettings {
+  id       String  @id @default(cuid())
+  schoolId String  @unique
+  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  isEnabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum MarketplaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+  EXPIRED
+}
+
+model MarketplaceInvitation {
+  id String @id @default(cuid())
+
+  schoolId  String
+  school    School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  status  MarketplaceInvitationStatus @default(PENDING)
+  message String?                     @db.Text
+
+  proposedHoursPerWeek Int?
+  proposedHourlyRate   Float?
+
+  respondedAt DateTime?
+  expiresAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  engagement MarketplaceEngagement?
+
+  @@index([teacherId, status])
+  @@index([schoolId, status])
+}
+
+enum EngagementStatus {
+  ACTIVE
+  COMPLETED
+  TERMINATED
+}
+
+model MarketplaceEngagement {
+  id String @id @default(cuid())
+
+  invitationId String              @unique
+  invitation   MarketplaceInvitation @relation(fields: [invitationId], references: [id])
+
+  schoolId  String
+  school    School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  membershipId String?
+
+  status    EngagementStatus @default(ACTIVE)
+  startDate DateTime         @default(now())
+  endDate   DateTime?
+
+  agreedHoursPerWeek Int?
+  agreedHourlyRate   Float?
+  currency           String @default("MAD")
+  totalHoursLogged   Float  @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reviews MarketplaceReview[]
+
+  @@index([teacherId, status])
+  @@index([schoolId, status])
+}
+
+enum ReviewerRole {
+  SCHOOL
+  TEACHER
+}
+
+model MarketplaceReview {
+  id String @id @default(cuid())
+
+  engagementId   String
+  engagement     MarketplaceEngagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  reviewerRole   ReviewerRole
+  reviewerAuthId String
+
+  rating  Int
+  comment String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@unique([engagementId, reviewerRole])
+}
+
+model SchoolMarketplaceNeed {
+  id       String  @id @default(cuid())
+  schoolId String
+  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  title        String
+  description  String?  @db.Text
+  subjectTags  String[]
+  hoursPerWeek Int?
+  isActive     Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  applications MarketplaceApplication[]
+
+  @@index([schoolId])
+}
+
+enum ApplicationStatus {
+  PENDING
+  REVIEWED
+  ACCEPTED
+  REJECTED
+}
+
+model MarketplaceApplication {
+  id String @id @default(cuid())
+
+  needId    String
+  need      SchoolMarketplaceNeed @relation(fields: [needId], references: [id], onDelete: Cascade)
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  status    ApplicationStatus @default(PENDING)
+  message   String?           @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([needId, teacherId])
+  @@index([teacherId])
 }

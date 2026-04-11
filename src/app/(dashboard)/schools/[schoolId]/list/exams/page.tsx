@@ -4,9 +4,10 @@ import Table from "@/components/Table";
 import TableSearch from "@/components/TableSearch";
 import prisma from "@/lib/prisma";
 import { ITEM_PER_PAGE } from "@/lib/settings";
-import { Class, Exam, Prisma, Subject, Teacher } from "@prisma/client";
+import { Class, Exam, ExamCategory, Prisma, Subject, Teacher } from "@prisma/client";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 type ExamList = Exam & {
   lesson: {
@@ -30,7 +31,7 @@ const ExamListPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -53,6 +54,16 @@ const columns = [
     accessor: "date",
     className: "hidden md:table-cell",
   },
+  {
+    header: "Type",
+    accessor: "examType",
+    className: "hidden lg:table-cell",
+  },
+  {
+    header: "Duration",
+    accessor: "duration",
+    className: "hidden lg:table-cell",
+  },
   ...(authUser.role === "admin" || authUser.role === "teacher"
     ? [
         {
@@ -68,7 +79,14 @@ const renderRow = (item: ExamList) => (
     key={item.id}
     className="border-b border-gray-200 even:bg-slate-50 text-sm hover:bg-lamaPurpleLight"
   >
-    <td className="flex items-center gap-4 p-4">{item.lesson?.subject.name ?? "—"}</td>
+    <td className="flex items-center gap-3 p-4">
+      <span>{item.lesson?.subject.name ?? "—"}</span>
+      {item.isRecurring && (
+        <span className="text-[11px] px-2 py-1 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
+          Recurring
+        </span>
+      )}
+    </td>
     <td>{item.lesson?.class.name ?? "—"}</td>
     <td className="hidden md:table-cell">
       {item.lesson
@@ -78,6 +96,18 @@ const renderRow = (item: ExamList) => (
     <td className="hidden md:table-cell">
       {new Intl.DateTimeFormat("en-US").format(item.startTime)}
     </td>
+    <td className="hidden lg:table-cell">
+      {item.examCategory === ExamCategory.POP_QUIZ ? (
+        <span className="text-[11px] px-2 py-1 rounded-md bg-amber-50 text-amber-900 border border-amber-200">
+          Pop quiz
+        </span>
+      ) : (
+        <span className="text-[11px] px-2 py-1 rounded-md bg-slate-100 text-slate-800 border border-slate-200">
+          Course exam
+        </span>
+      )}
+    </td>
+    <td className="hidden lg:table-cell">{item.durationMinutes} min</td>
     <td>
       <div className="flex items-center gap-2">
         {(authUser.role === "admin" || authUser.role === "teacher") && (

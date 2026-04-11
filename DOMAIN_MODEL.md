@@ -1,6 +1,8 @@
 # Skooly Domain Model
 
-This document describes the domain model for the Skooly school management platform. Entities marked with *(planned)* are described in the system design but not yet in the schema.
+This document describes **entities, relationships, and enums** for the Skooly school management platform. All diagrams match the current Prisma schema: **48 models** and **19 enums** across 7 domains. Diagrams are kept **separated by domain** for readability with cross-references documented at the end.
+
+Implementation may still **fall back** to `Auth.schoolId` when no membership rows exist; see [`docs/AUTH_SCHOOL_CONTEXT.md`](docs/AUTH_SCHOOL_CONTEXT.md).
 
 ---
 
@@ -8,501 +10,613 @@ This document describes the domain model for the Skooly school management platfo
 
 | Symbol | Type | Meaning |
 |--------|------|---------|
-| `◆` / `*--` | **Composition** | Strong ownership; child cannot exist without parent; lifecycle bound |
-| `◇` / `o--` | **Aggregation** | Weak ownership; child can exist independently; "has-a" collection |
-| `——>` | **Association** | Uses/links to; no ownership; bidirectional or directional |
-| `<|——` | **Inheritance** | "Is-a" relationship; specialization |
-| `- - ->` | **Dependency** | Weak usage; one depends on another for operation |
+| `*--` | **Composition** | Strong ownership; child cannot exist without parent; lifecycle bound (required FK + cascade) |
+| `o--` | **Aggregation** | Weak ownership; child can exist independently; optional FK or "has-a" collection |
+| `-->` | **Association** | Uses/links to; no ownership; required or optional reference |
+| `..>` | **Dependency** | Weak usage; one depends on another for operation (no FK) |
+| `<\|--` | **Generalization** | "Is-a" / specialization; child extends or depends on parent for identity (empty triangle arrow) |
 
 ---
 
 ## Diagram 1: Core Domain (People & Tenant)
 
-**Composition**: School *owns* Admin, Teacher, Student, Parent, Auth (school-scoped). They cannot exist without a School.
+### Identity vs Tenant Access
 
-**Composition**: Auth *owns* exactly one profile (Admin, Teacher, Student, or Parent). The profile is the identity extension.
+| Layer | Responsibility |
+|-------|----------------|
+| **Auth** | **Identity** — who can sign in (session subject). |
+| **SchoolMembership** | **Tenant access** — which School(s), role, and profile apply per context. |
 
-**Association**: Parent ↔ Student (many-to-many via family relationship; in schema it's Parent has many Students).
+**Rules:**
 
-**Dependency**: Invite (planned) depends on School and creates Auth + profile on acceptance.
+- Prefer **active membership** for current school and role.
+- **Teacher**, **Parent**, **School admin**: multiple active memberships (multi-school).
+- **Student**: one active membership at a time.
+- **System admin**: outside school membership graph.
 
 ```mermaid
 classDiagram
     direction TB
 
-    %% Tenant - Composition: School owns all school-scoped entities
-    class School {
-        +id: String
-        +name: String
-        +stripeCustomerId: String?
-    }
+    class School
+    class Auth
+    class Admin
+    class Teacher
+    class Student
+    class Parent
+    class SystemAdmin
+    class SchoolMembership
 
-    class Auth {
-        +id: String
-        +username: String
-        +email: String?
-        +role: String
-    }
+    School "1" *-- "0..*" Admin
+    School "1" o-- "0..*" Teacher
+    School "1" *-- "0..*" Student
+    School "1" o-- "0..*" Parent
 
-    class Admin {
-        +id: String
-        +name: String
-        +surname: String
-    }
+    Auth <|-- Admin
+    Auth <|-- Teacher
+    Auth <|-- Student
+    Auth <|-- Parent
+    Auth <|-- SystemAdmin
 
-    class Teacher {
-        +id: String
-        +name: String
-        +surname: String
-    }
+    SchoolMembership --> Auth
 
-    class Student {
-        +id: String
-        +name: String
-        +surname: String
-    }
+    Auth ..> School : optional default
 
-    class Parent {
-        +id: String
-        +name: String
-        +surname: String
-    }
+    SchoolMembership --> School
+    SchoolMembership --> Admin
+    SchoolMembership --> Teacher
+    SchoolMembership --> Student
+    SchoolMembership --> Parent
 
-    class SystemAdmin {
-        +id: String
-        +name: String?
-    }
-
-    %% Planned: Invite (from SYSTEM_DESIGN §5.4, §6.2)
-    class Invite {
-        +id: String
-        +email: String
-        +role: String
-        +token: String
-        +status: InviteStatus
-    }
-
-    %% Composition: School contains people
-    School "1" *-- "0..*" Admin : contains
-    School "1" *-- "0..*" Teacher : contains
-    School "1" *-- "0..*" Student : contains
-    School "1" *-- "0..*" Parent : contains
-
-    %% Composition: Auth has exactly one profile (role-specific)
-    Auth "1" *-- "0..1" Admin : admin
-    Auth "1" *-- "0..1" Teacher : teacher
-    Auth "1" *-- "0..1" Student : student
-    Auth "1" *-- "0..1" Parent : parent
-    Auth "1" *-- "0..1" SystemAdmin : systemAdmin
-
-    %% Association: Auth belongs to School (optional for system_admin)
-    Auth --> School : schoolId
-
-    %% Association: Parent has many Students
-    Parent "1" o-- "0..*" Student : children
-
-    %% Association: Invite (planned) belongs to School; creates Auth on accept
-    Invite ..> School : schoolId
-    Invite ..> Auth : creates on accept
+    Parent "1" o-- "0..*" Student
+    Teacher "0..*" --> "0..*" Subject : teaches
 ```
 
-**Relationship summary (Diagram 1):**
+**Relationship descriptions:**
 
-| From | To | Type | Cardinality |
-|------|-----|------|--------------|
-| School | Admin, Teacher, Student, Parent | Composition | 1 : 0..* |
-| Auth | Admin, Teacher, Student, Parent, SystemAdmin | Composition | 1 : 0..1 (exclusive) |
-| Auth | School | Association | N : 1 |
-| Parent | Student | Aggregation | 1 : 0..* |
-| Invite | School | Dependency | N : 1 |
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | Admin | Composition | 1 : 0..* | A school owns its admin profiles. Admin.schoolId is required; cascade delete. |
+| 2 | School | Teacher | Aggregation | 1 : 0..* | A school has teachers, but Teacher.schoolId is optional (multi-school teachers may have null home school). |
+| 3 | School | Student | Composition | 1 : 0..* | A school owns its students. Student.schoolId is required; cascade delete. |
+| 4 | School | Parent | Aggregation | 1 : 0..* | A school has parents, but Parent.schoolId is optional (multi-school parents). |
+| 5 | Admin | Auth | Generalization | 0..1 : 1 | An admin is a specialization of Auth. authId is required and unique. |
+| 6 | Teacher | Auth | Generalization | 0..1 : 1 | A teacher is a specialization of Auth. authId is required and unique. |
+| 7 | Student | Auth | Generalization | 0..1 : 1 | A student is a specialization of Auth. authId is required and unique. |
+| 8 | Parent | Auth | Generalization | 0..1 : 1 | A parent is a specialization of Auth. authId is required and unique. |
+| 9 | SystemAdmin | Auth | Generalization | 0..1 : 1 | A system admin is a specialization of Auth. authId is required and unique. |
+| 10 | Auth | School | Dependency | N : 0..1 | Optional legacy default school on the auth row. Not authoritative for tenant; membership is. |
+| 11 | SchoolMembership | Auth | Association | 0..* : 1 | Each membership references one Auth (the user). authId is required. Cascade delete. |
+| 12 | SchoolMembership | School | Association | N : 1 | Each membership row belongs to exactly one school. Required FK. |
+| 13 | SchoolMembership | Admin | Association | N : 0..1 | Optional pointer to the admin profile for this membership context. |
+| 14 | SchoolMembership | Teacher | Association | N : 0..1 | Optional pointer to the teacher profile for this membership context. |
+| 15 | SchoolMembership | Student | Association | N : 0..1 | Optional pointer to the student profile for this membership context. |
+| 16 | SchoolMembership | Parent | Association | N : 0..1 | Optional pointer to the parent profile for this membership context. |
+| 17 | Parent | Student | Aggregation | 1 : 0..* | A parent has zero or more children (students). Student.parentId is required. |
+| 18 | Teacher | Subject | Association (M:N) | 0..* : 0..* | Implicit many-to-many join table. A teacher can teach multiple subjects; a subject can have multiple teachers. |
+
+**Membership cardinality:**
+
+| Persona | Active rows per Auth |
+|---------|---------------------|
+| Teacher, Parent, School admin | 0..* (multi-school) |
+| Student | 0..1 active |
+| System admin | N/A |
 
 ---
 
 ## Diagram 2: Academic Structure
 
-**Composition**: AcademicYear *owns* Class, Curriculum, StudentEnrollmentHistory. These are scoped to a year and do not exist without it.
+```mermaid
+classDiagram
+    direction TB
 
-**Composition**: School *owns* Grade, Subject (school-level, reusable across years).
+    class School
+    class AcademicYear
+    class Term
+    class Grade
+    class Class
+    class Subject
+    class Curriculum
+    class CurriculumBook
+    class StudentEnrollmentHistory
+    class Student
+    class Teacher
+    class TimetableGradeTemplate
 
-**Aggregation**: Class aggregates Students via StudentEnrollmentHistory (enrollment is the source of truth; Student can exist without Class).
+    School "1" *-- "0..*" AcademicYear
+    School "1" *-- "0..*" Grade
+    School "1" *-- "0..*" Subject
+    School "1" *-- "0..*" Curriculum
+    School "1" *-- "0..*" TimetableGradeTemplate
 
-**Association**: Curriculum links AcademicYear + Grade + Subject (many-to-many bridge).
+    AcademicYear "1" *-- "0..*" Class
+    AcademicYear "1" *-- "0..*" Curriculum
+    AcademicYear "1" *-- "0..*" StudentEnrollmentHistory
+    AcademicYear "1" *-- "0..*" Term
 
-**Planned**: CurriculumTemplate, CurriculumTemplateSystem for country-based templates (§11.5).
+    School "1" o-- "0..1" AcademicYear : active year
+
+    Term --> School
+    Term --> AcademicYear
+
+    Curriculum "1" *-- "0..*" CurriculumBook
+
+    Class --> School
+    Class --> Grade
+    Class --> AcademicYear
+    Class --> Teacher : supervisor
+
+    Curriculum --> AcademicYear
+    Curriculum --> Grade
+    Curriculum --> Subject
+    Curriculum --> School
+
+    StudentEnrollmentHistory --> Student
+    StudentEnrollmentHistory --> Class
+    StudentEnrollmentHistory --> AcademicYear
+
+    Student --> Class : current
+    Student --> Grade : current
+
+    TimetableGradeTemplate --> School
+    TimetableGradeTemplate --> Grade
+```
+
+**Relationship descriptions:**
+
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | AcademicYear | Composition | 1 : 0..* | A school owns its academic years. Required FK; cascade delete. |
+| 2 | School | Grade | Composition | 1 : 0..* | A school owns its grade levels (e.g. Grade 1-6). Required FK; cascade delete. |
+| 3 | School | Subject | Composition | 1 : 0..* | A school owns its subject catalog. Required FK; cascade delete. |
+| 4 | School | Curriculum | Composition | 1 : 0..* | A school owns curriculum rows (linking year x grade x subject). FK uses onDelete: NoAction. |
+| 5 | School | TimetableGradeTemplate | Composition | 1 : 0..* | A school owns timetable templates per grade. Required FK; cascade delete. |
+| 6 | School | AcademicYear (active) | Aggregation | 1 : 0..1 | A school optionally points to one active academic year. SetNull on delete. |
+| 7 | AcademicYear | Class | Composition | 1 : 0..* | An academic year owns its classes. Required FK; cascade delete. |
+| 8 | AcademicYear | Curriculum | Composition | 1 : 0..* | An academic year owns its curriculum entries. Required FK; cascade delete. |
+| 9 | AcademicYear | StudentEnrollmentHistory | Composition | 1 : 0..* | An academic year owns enrollment history records. Required FK; cascade delete. |
+| 10 | AcademicYear | Term | Composition | 1 : 0..* | An academic year is divided into terms (e.g. Fall, Winter, Spring). Required FK; cascade delete. |
+| 11 | Term | School | Association | N : 1 | Each term belongs to one school. Required FK; cascade delete. |
+| 12 | Term | AcademicYear | Association | N : 1 | Each term belongs to one academic year. Required FK; cascade delete. |
+| 13 | Class | School | Association | N : 1 | Each class belongs to one school. Required FK; cascade delete. |
+| 14 | Class | Grade | Association | N : 1 | Each class is assigned to one grade level. Required FK. |
+| 15 | Class | AcademicYear | Association | N : 1 | Each class belongs to one academic year. Required FK; cascade delete. |
+| 16 | Class | Teacher (supervisor) | Association | N : 0..1 | A class may have one supervising teacher. Optional FK. |
+| 17 | Curriculum | AcademicYear | Association | N : 1 | Each curriculum entry belongs to one academic year. |
+| 18 | Curriculum | Grade | Association | N : 1 | Each curriculum entry targets one grade. Cascade delete. |
+| 19 | Curriculum | Subject | Association | N : 1 | Each curriculum entry is for one subject. Cascade delete. |
+| 20 | Curriculum | School | Association | N : 1 | Each curriculum entry belongs to one school (integrity guard). |
+| 21 | Curriculum | CurriculumBook | Composition | 1 : 0..* | A curriculum entry owns its book/resource records. Cascade delete. |
+| 22 | StudentEnrollmentHistory | Student | Association | N : 1 | Each enrollment record references one student. Cascade delete. |
+| 23 | StudentEnrollmentHistory | Class | Association | N : 1 | Each enrollment record references one class. Cascade delete. |
+| 24 | StudentEnrollmentHistory | AcademicYear | Association | N : 1 | Each enrollment record references one academic year. Cascade delete. |
+| 25 | Student | Class | Association | N : 0..1 | A student may be currently assigned to one class. Optional FK; SetNull on class delete. |
+| 26 | Student | Grade | Association | N : 0..1 | A student may be assigned a current grade level. Optional FK; SetNull on grade delete. |
+| 27 | TimetableGradeTemplate | School | Association | N : 1 | Each template belongs to one school. Cascade delete. Unique per (school, grade). |
+| 28 | TimetableGradeTemplate | Grade | Association | N : 1 | Each template targets one grade. Cascade delete. |
+
+---
+
+## Diagram 3: Scheduling, Calendar & Academic Activities
 
 ```mermaid
 classDiagram
     direction TB
 
-    class School {
-        +id: String
-        +name: String
-    }
+    class School
+    class Term
+    class AcademicYear
+    class Period
+    class Lesson
+    class LessonSession
+    class ExamTemplate
+    class Exam
+    class SchoolCalendarException
+    class Assignment
+    class Attendance
+    class Result
+    class Class
+    class Subject
+    class Teacher
+    class Student
+    class Room
+    class ScheduleChangeRequest
+    class TeacherAvailability
+    class Event
+    class Announcement
 
-    class AcademicYear {
-        +id: String
-        +name: String
-        +startDate: DateTime
-        +endDate: DateTime
-        +isActive: Boolean
-    }
+    School "1" *-- "0..*" Period
+    School "1" *-- "0..*" Lesson
+    School "1" *-- "0..*" LessonSession
+    School "1" *-- "0..*" ExamTemplate
+    School "1" *-- "0..*" Exam
+    School "1" *-- "0..*" Assignment
+    School "1" *-- "0..*" Attendance
+    School "1" *-- "0..*" Result
+    School "1" *-- "0..*" Room
+    School "1" *-- "0..*" Event
+    School "1" *-- "0..*" Announcement
+    School "1" *-- "0..*" TeacherAvailability
+    School "1" *-- "0..*" ScheduleChangeRequest
+    School "1" *-- "0..*" SchoolCalendarException
 
-    class Grade {
-        +id: Int
-        +level: String
-    }
+    Term "1" *-- "0..*" LessonSession
+    Term "1" *-- "0..*" ExamTemplate
+    Term "1" *-- "0..*" SchoolCalendarException
+    Term "1" o-- "0..*" Exam
 
-    class Class {
-        +id: Int
-        +name: String
-        +capacity: Int
-    }
+    Lesson --> Class
+    Lesson --> Subject
+    Lesson --> Teacher
+    Lesson --> Room : optional
+    Lesson --> Period : start period optional
+    Lesson --> Period : end period optional
 
-    class Subject {
-        +id: Int
-        +name: String
-    }
+    LessonSession --> Term
+    LessonSession --> Lesson : template
+    LessonSession --> School
+    LessonSession --> Class
+    LessonSession --> Subject
+    LessonSession --> Teacher : assigned
+    LessonSession --> Room : scheduled optional
+    LessonSession --> Teacher : substitute optional
+    LessonSession --> Room : override optional
 
-    class Curriculum {
-        +id: String
-        +description: String?
-        +textbook: String?
-    }
+    ExamTemplate --> School
+    ExamTemplate --> Term
+    ExamTemplate --> Class
+    ExamTemplate --> Subject
+    ExamTemplate --> Teacher
+    ExamTemplate --> Room : optional
+    ExamTemplate "1" o-- "0..*" Exam
 
-    class StudentEnrollmentHistory {
-        +id: String
-        +enrollmentDate: DateTime
-        +departureDate: DateTime?
-    }
+    Exam --> School
+    Exam --> Lesson : optional
+    Exam --> Term : optional
+    Exam --> SchoolCalendarException : exam period optional
 
-    class Student {
-        +id: String
-    }
+    Assignment --> School
+    Assignment --> Lesson : source optional
+    Assignment --> Lesson : due optional
 
-    class Teacher {
-        +id: String
-    }
+    Attendance --> School
+    Attendance --> Lesson
+    Attendance --> Student
+    Attendance --> AcademicYear
 
-    %% Planned: Curriculum templates (§11.5)
-    class CurriculumTemplate {
-        +id: String
-        +country: String
-        +systemName: String
-    }
+    Result --> School
+    Result --> Student
+    Result --> Exam : optional
+    Result --> Assignment : optional
 
-    class CurriculumTemplateEntry {
-        +gradeLevel: String
-        +subjectName: String
-    }
+    ScheduleChangeRequest --> School
+    ScheduleChangeRequest --> Lesson
+    ScheduleChangeRequest --> Teacher : requester
+    ScheduleChangeRequest --> Teacher : swap target optional
 
-    %% Composition: School owns Grade, Subject
-    School "1" *-- "0..*" Grade : has
-    School "1" *-- "0..*" Subject : has
+    TeacherAvailability --> Teacher
+    TeacherAvailability --> School
 
-    %% Composition: School owns AcademicYear
-    School "1" *-- "0..*" AcademicYear : has
+    Event --> School
+    Event --> Class : optional
+    Event --> Room : optional
 
-    %% Composition: AcademicYear owns Class, Curriculum, EnrollmentHistory
-    AcademicYear "1" *-- "0..*" Class : contains
-    AcademicYear "1" *-- "0..*" Curriculum : contains
-    AcademicYear "1" *-- "0..*" StudentEnrollmentHistory : contains
-
-    %% Association: Class belongs to Grade
-    Class --> Grade : gradeId
-    Class --> Teacher : supervisorId
-
-    %% Association: Curriculum links AcademicYear, Grade, Subject
-    Curriculum --> AcademicYear : academicYearId
-    Curriculum --> Grade : gradeId
-    Curriculum --> Subject : subjectId
-
-    %% Aggregation: StudentEnrollmentHistory links Student to Class (enrollment is source of truth)
-    StudentEnrollmentHistory --> Student : studentId
-    StudentEnrollmentHistory --> Class : classId
-    StudentEnrollmentHistory --> AcademicYear : academicYearId
-
-    %% Association: Class has many Students (via enrollment)
-    Class "1" o-- "0..*" Student : enrolled via
-
-    %% Planned: CurriculumTemplate
-    CurriculumTemplate "1" *-- "0..*" CurriculumTemplateEntry : contains
-    CurriculumTemplate ..> Curriculum : generates
+    Announcement --> School
+    Announcement --> Class : optional
 ```
 
-**Relationship summary (Diagram 2):**
+**Relationship descriptions:**
 
-| From | To | Type | Cardinality |
-|------|-----|------|-------------|
-| School | Grade, Subject, AcademicYear | Composition | 1 : 0..* |
-| AcademicYear | Class, Curriculum, StudentEnrollmentHistory | Composition | 1 : 0..* |
-| Class | Grade | Association | N : 1 |
-| Class | Teacher | Association | N : 0..1 (supervisor) |
-| Curriculum | AcademicYear, Grade, Subject | Association | N : 1 each |
-| StudentEnrollmentHistory | Student, Class, AcademicYear | Association | N : 1 each |
-| Class | Student | Aggregation (via enrollment) | 1 : 0..* |
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | Period | Composition | 1 : 0..* | A school owns its bell schedule periods. Cascade delete. |
+| 2 | School | Lesson | Composition | 1 : 0..* | A school owns weekly lesson templates. Cascade delete. |
+| 3 | School | LessonSession | Composition | 1 : 0..* | A school owns dated lesson instances. Cascade delete. |
+| 4 | School | ExamTemplate | Composition | 1 : 0..* | A school owns recurring exam templates. Cascade delete. |
+| 5 | School | Exam | Composition | 1 : 0..* | A school owns exam records. Cascade delete. |
+| 6 | School | Assignment | Composition | 1 : 0..* | A school owns assignment records. Cascade delete. |
+| 7 | School | Attendance | Composition | 1 : 0..* | A school owns attendance records. Cascade delete. |
+| 8 | School | Result | Composition | 1 : 0..* | A school owns result/score records. Cascade delete. |
+| 9 | School | Room | Composition | 1 : 0..* | A school owns its physical rooms. Cascade delete. |
+| 10 | School | Event | Composition | 1 : 0..* | A school owns calendar events. Cascade delete. |
+| 11 | School | Announcement | Composition | 1 : 0..* | A school owns announcements. Cascade delete. |
+| 12 | School | TeacherAvailability | Composition | 1 : 0..* | A school owns teacher availability slots. Cascade delete. |
+| 13 | School | ScheduleChangeRequest | Composition | 1 : 0..* | A school owns schedule change requests. Cascade delete. |
+| 14 | School | SchoolCalendarException | Composition | 1 : 0..* | A school owns calendar exceptions (holidays, breaks, exam periods). Cascade delete. |
+| 15 | Term | LessonSession | Composition | 1 : 0..* | A term owns its generated lesson sessions. Cascade delete. |
+| 16 | Term | ExamTemplate | Composition | 1 : 0..* | A term owns recurring exam templates. |
+| 17 | Term | SchoolCalendarException | Composition | 1 : 0..* | A term owns its calendar exceptions. Cascade delete. |
+| 18 | Term | Exam | Aggregation | 1 : 0..* | A term may have exams linked to it. Exam.termId is optional; SetNull on delete. |
+| 19 | Lesson | Class | Association | N : 1 | Each lesson template is for one class. Required FK. |
+| 20 | Lesson | Subject | Association | N : 1 | Each lesson template teaches one subject. Required FK. |
+| 21 | Lesson | Teacher | Association | N : 1 | Each lesson template is assigned to one teacher. Required FK. |
+| 22 | Lesson | Room | Association | N : 0..1 | A lesson may be assigned a room. Null for online lessons. SetNull on delete. |
+| 23 | Lesson | Period (start) | Association | N : 0..1 | A lesson may map to a start bell period. SetNull on delete. |
+| 24 | Lesson | Period (end) | Association | N : 0..1 | For multi-block lessons, an end period. Null means single period. SetNull on delete. |
+| 25 | LessonSession | Term | Association | N : 1 | Each session belongs to one term. Cascade delete. |
+| 26 | LessonSession | Lesson (template) | Association | N : 1 | Each session is generated from one lesson template. Cascade delete. |
+| 27 | LessonSession | School | Association | N : 1 | Each session belongs to one school. Cascade delete. |
+| 28 | LessonSession | Class | Association | N : 1 | Each session is for one class. Required FK. |
+| 29 | LessonSession | Subject | Association | N : 1 | Each session is for one subject (denormalized from template). Required FK. |
+| 30 | LessonSession | Teacher (assigned) | Association | N : 1 | Primary teacher for this session. Required FK. |
+| 31 | LessonSession | Room (scheduled) | Association | N : 0..1 | Scheduled room (from template). Optional; SetNull on delete. |
+| 32 | LessonSession | Teacher (substitute) | Association | N : 0..1 | Optional substitute teacher override. SetNull on delete. |
+| 33 | LessonSession | Room (override) | Association | N : 0..1 | Optional room override (admin moved the session). SetNull on delete. |
+| 34 | ExamTemplate | School | Association | N : 1 | Each exam template belongs to one school. Cascade delete. |
+| 35 | ExamTemplate | Term | Association | N : 1 | Each exam template is scoped to one term. |
+| 36 | ExamTemplate | Class | Association | N : 1 | Each exam template targets one class. |
+| 37 | ExamTemplate | Subject | Association | N : 1 | Each exam template is for one subject. |
+| 38 | ExamTemplate | Teacher | Association | N : 1 | Each exam template is assigned to one teacher. |
+| 39 | ExamTemplate | Room | Association | N : 0..1 | Optional room for the exam. |
+| 40 | ExamTemplate | Exam | Aggregation | 1 : 0..* | A template generates zero or more exam instances. SetNull on delete. |
+| 41 | Exam | School | Association | N : 1 | Each exam belongs to one school. Cascade delete. |
+| 42 | Exam | Lesson | Association | N : 0..1 | An exam may link to a lesson (subject/class context). Optional FK. |
+| 43 | Exam | Term | Association | N : 0..1 | An exam may belong to a term. Optional FK; SetNull on delete. |
+| 44 | Exam | SchoolCalendarException | Association | N : 0..1 | An exam may fall within a declared exam period window. Optional FK; SetNull on delete. |
+| 45 | Assignment | School | Association | N : 1 | Each assignment belongs to one school. Cascade delete. |
+| 46 | Assignment | Lesson (source) | Association | N : 0..1 | The lesson that assigned this work. Optional FK; SetNull on delete. |
+| 47 | Assignment | Lesson (due) | Association | N : 0..1 | The lesson on which this assignment is due. Optional FK; SetNull on delete. |
+| 48 | Attendance | School | Association | N : 1 | Each attendance record belongs to one school. Cascade delete. |
+| 49 | Attendance | Lesson | Association | N : 1 | Each attendance record is for one lesson. Required FK. |
+| 50 | Attendance | Student | Association | N : 1 | Each attendance record is for one student. Required FK. |
+| 51 | Attendance | AcademicYear | Association | N : 1 | Each attendance record belongs to one academic year. |
+| 52 | Result | School | Association | N : 1 | Each result belongs to one school. Cascade delete. |
+| 53 | Result | Student | Association | N : 1 | Each result is for one student. Required FK. |
+| 54 | Result | Exam | Association | N : 0..1 | A result may be for an exam. Optional FK (XOR with assignment at app level). |
+| 55 | Result | Assignment | Association | N : 0..1 | A result may be for an assignment. Optional FK (XOR with exam at app level). |
+| 56 | ScheduleChangeRequest | School | Association | N : 1 | Each request belongs to one school. Cascade delete. |
+| 57 | ScheduleChangeRequest | Lesson | Association | N : 1 | Each request targets one lesson. Cascade delete. |
+| 58 | ScheduleChangeRequest | Teacher (requester) | Association | N : 1 | The teacher who submitted the request. Cascade delete. |
+| 59 | ScheduleChangeRequest | Teacher (swap target) | Association | N : 0..1 | For SWAP type: the proposed swap teacher. Optional; NoAction on delete. |
+| 60 | TeacherAvailability | Teacher | Association | N : 1 | Each availability slot belongs to one teacher. Cascade delete. |
+| 61 | TeacherAvailability | School | Association | N : 1 | Each availability slot is scoped to one school. Cascade delete. Unique per (teacher, day, time, school). |
+| 62 | Event | School | Association | N : 1 | Each event belongs to one school. Cascade delete. |
+| 63 | Event | Class | Association | N : 0..1 | An event may target a specific class. Optional FK; cascade delete. |
+| 64 | Event | Room | Association | N : 0..1 | An event may be in a room. Optional FK; SetNull on delete. |
+| 65 | Announcement | School | Association | N : 1 | Each announcement belongs to one school. Cascade delete. |
+| 66 | Announcement | Class | Association | N : 0..1 | An announcement may target a specific class. Optional FK. |
 
 ---
 
-## Diagram 3: Scheduling & Academic Activities
-
-**Composition**: Lesson *owns* Exam, Assignment, Attendance (they are tied to a lesson and have no meaning without it).
-
-**Aggregation**: Result aggregates Student with Exam or Assignment (Student and Exam/Assignment can exist independently).
-
-**Association**: Lesson links Class, Subject, Teacher, Room. Room is optional.
-
-**Composition**: ScheduleChangeRequest is owned by School and depends on Lesson and Teacher.
-
-**Composition**: TeacherAvailability is owned by Teacher (availability slots).
+## Diagram 4: Grading, Promotion & Join Access
 
 ```mermaid
 classDiagram
     direction TB
 
-    class Lesson {
-        +id: Int
-        +name: String
-        +day: Day
-        +startTime: DateTime
-        +endTime: DateTime
-    }
+    class School
+    class AcademicYear
+    class Grade
+    class GradingScale
+    class GradeBand
+    class PromotionRules
+    class JoinCode
+    class Class
 
-    class Class {
-        +id: Int
-    }
+    School "1" *-- "0..*" GradingScale
+    GradingScale "1" *-- "0..*" GradeBand
 
-    class Subject {
-        +id: Int
-    }
+    PromotionRules --> School
+    PromotionRules --> AcademicYear
+    PromotionRules --> Grade : optional
 
-    class Teacher {
-        +id: String
-    }
-
-    class Room {
-        +id: Int
-        +name: String
-        +capacity: Int?
-    }
-
-    class Exam {
-        +id: Int
-        +title: String
-        +startTime: DateTime
-        +endTime: DateTime
-    }
-
-    class Assignment {
-        +id: Int
-        +title: String
-        +dueDate: DateTime
-    }
-
-    class Result {
-        +id: Int
-        +score: Float
-        +comments: String?
-    }
-
-    class Attendance {
-        +id: Int
-        +date: DateTime
-        +status: String
-    }
-
-    class Student {
-        +id: String
-    }
-
-    class ScheduleChangeRequest {
-        +id: String
-        +requestedChangeType: ScheduleChangeType
-        +status: RequestStatus
-    }
-
-    class TeacherAvailability {
-        +id: String
-        +dayOfWeek: Day
-        +startTime: DateTime
-        +endTime: DateTime
-        +isAvailable: Boolean
-    }
-
-    class Event {
-        +id: Int
-        +title: String
-        +startTime: DateTime
-        +endTime: DateTime
-    }
-
-    %% Association: Lesson links Class, Subject, Teacher, Room
-    Lesson --> Class : classId
-    Lesson --> Subject : subjectId
-    Lesson --> Teacher : teacherId
-    Lesson --> Room : roomId (optional)
-
-    %% Composition: Lesson owns Exam, Assignment, Attendance
-    Lesson "1" *-- "0..*" Exam : has
-    Lesson "1" *-- "0..*" Assignment : has
-    Lesson "1" *-- "0..*" Attendance : has
-
-    %% Aggregation: Result links Student to Exam or Assignment
-    Result --> Student : studentId
-    Result --> Exam : examId
-    Result --> Assignment : assignmentId
-
-    %% Association: Attendance links Student and Lesson
-    Attendance --> Student : studentId
-    Attendance --> Lesson : lessonId
-
-    %% Association: ScheduleChangeRequest
-    ScheduleChangeRequest --> Lesson : lessonId
-    ScheduleChangeRequest --> Teacher : requestingTeacherId
-    ScheduleChangeRequest --> Teacher : proposedSwapTeacherId
-
-    %% Composition: TeacherAvailability owned by Teacher
-    Teacher "1" *-- "0..*" TeacherAvailability : has
-
-    %% Association: Event (school/class events)
-    Event --> Room : roomId (optional)
-    Event --> Class : classId (optional)
+    JoinCode --> School
+    JoinCode --> Class : optional
 ```
 
-**Relationship summary (Diagram 3):**
+**Relationship descriptions:**
 
-| From | To | Type | Cardinality |
-|------|-----|------|-------------|
-| Lesson | Class, Subject, Teacher | Association | N : 1 |
-| Lesson | Room | Association | N : 0..1 |
-| Lesson | Exam, Assignment, Attendance | Composition | 1 : 0..* |
-| Result | Student, Exam/Assignment | Association | N : 1 |
-| Attendance | Student, Lesson | Association | N : 1 each |
-| ScheduleChangeRequest | Lesson, Teacher | Association | N : 1 |
-| Teacher | TeacherAvailability | Composition | 1 : 0..* |
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | GradingScale | Composition | 1 : 0..* | A school owns its grading scales. Cascade delete. |
+| 2 | GradingScale | GradeBand | Composition | 1 : 0..* | A grading scale owns its band entries (letter grades / ranges). Cascade delete. |
+| 3 | PromotionRules | School | Association | N : 1 | Each promotion rule set belongs to one school. Cascade delete. |
+| 4 | PromotionRules | AcademicYear | Association | N : 1 | Each promotion rule set is for one academic year. |
+| 5 | PromotionRules | Grade | Association | N : 0..1 | A promotion rule set may target a specific grade. Optional FK. Unique per (school, year, grade). |
+| 6 | JoinCode | School | Association | N : 1 | Each join code belongs to one school. Cascade delete. |
+| 7 | JoinCode | Class | Association | N : 0..1 | A join code may be scoped to one class (for CLASS_STUDENT type). Optional FK; cascade delete. |
 
 ---
 
-## Diagram 4: Billing
-
-**Association**: SchoolSubscription links School to SubscriptionPlan. School and SubscriptionPlan can exist independently.
-
-**Aggregation**: SchoolSubscription is the join between School and SubscriptionPlan.
+## Diagram 5: Billing
 
 ```mermaid
 classDiagram
     direction TB
 
-    class School {
-        +id: String
-        +stripeCustomerId: String?
-    }
+    class School
+    class SubscriptionPlan
+    class SchoolSubscription
 
-    class SubscriptionPlan {
-        +id: String
-        +name: String
-        +price: Float
-        +billingCycle: BillingCycle
-        +maxStudents: Int?
-        +maxTeachers: Int?
-    }
-
-    class SchoolSubscription {
-        +id: String
-        +stripeSubscriptionId: String
-        +status: SubscriptionStatus
-        +currentPeriodStart: DateTime
-        +currentPeriodEnd: DateTime
-    }
-
-    %% Association: SchoolSubscription links School and Plan
-    School "1" o-- "0..*" SchoolSubscription : has
-    SubscriptionPlan "1" o-- "0..*" SchoolSubscription : subscribed by
-    SchoolSubscription --> School : schoolId
-    SchoolSubscription --> SubscriptionPlan : subscriptionPlanId
+    School "1" o-- "0..*" SchoolSubscription
+    SubscriptionPlan "1" o-- "0..*" SchoolSubscription
+    SchoolSubscription --> School
+    SchoolSubscription --> SubscriptionPlan
 ```
 
-**Relationship summary (Diagram 4):**
+**Relationship descriptions:**
 
-| From | To | Type | Cardinality |
-|------|-----|------|-------------|
-| School | SchoolSubscription | Aggregation | 1 : 0..* |
-| SubscriptionPlan | SchoolSubscription | Aggregation | 1 : 0..* |
-| SchoolSubscription | School, SubscriptionPlan | Association | N : 1 each |
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | SchoolSubscription | Aggregation | 1 : 0..* | A school can have multiple subscriptions (active, past, etc.). |
+| 2 | SubscriptionPlan | SchoolSubscription | Aggregation | 1 : 0..* | A plan can be subscribed to by many schools. |
+| 3 | SchoolSubscription | School | Association | N : 1 | Each subscription belongs to one school. Required FK. |
+| 4 | SchoolSubscription | SubscriptionPlan | Association | N : 1 | Each subscription references one plan. Required FK. |
 
 ---
 
-## Diagram 5: Planned – Teacher Marketplace & Student Transfer
+## Diagram 6: Scheduling & Calendar Operations (Audit)
 
-Entities from SYSTEM_DESIGN §14 and §15, not yet in the schema.
-
-**Aggregation**: Teacher *aggregates* TeacherSchoolAssignment—a teacher can work at multiple schools; each assignment links the teacher to one school. The assignment can exist independently of the teacher’s profile (e.g. for historical records).
-
-**Composition**: Teacher *owns* TeacherMarketplaceProfile—the marketplace profile is an extension of the teacher for discovery; it has no meaning without the teacher.
-
-**Association**: TeacherSchoolAssignment links to School (the school where the teacher works). StudentTransfer links to Student and to two Schools (fromSchoolId, toSchoolId).
-
-**Dependency**: StudentTransfer depends on Student and School—when the transfer completes, it updates `Student.schoolId` and `Auth.schoolId`.
+Audit tables record pipeline runs and administrative edits. They support troubleshooting and accountability.
 
 ```mermaid
 classDiagram
     direction TB
 
-    class Teacher {
-        +id: String
-    }
+    class School
+    class Term
+    class LessonSession
+    class SchoolCalendarException
+    class TermScheduleGenerationLog
+    class RecurringExamCommitLog
+    class LessonSessionOverrideAudit
+    class CalendarExceptionAudit
 
-    class School {
-        +id: String
-    }
+    School "1" *-- "0..*" TermScheduleGenerationLog
+    School "1" *-- "0..*" RecurringExamCommitLog
+    School "1" *-- "0..*" LessonSessionOverrideAudit
+    School "1" *-- "0..*" CalendarExceptionAudit
 
-    class TeacherSchoolAssignment {
-        +id: String
-        +status: String
-    }
+    TermScheduleGenerationLog --> School
+    TermScheduleGenerationLog --> Term
 
-    class TeacherMarketplaceProfile {
-        +headline: String
-        +bio: String
-        +subjectsOffered: String[]
-        +availabilityType: String
-        +availabilitySlots: Json
-        +isActive: Boolean
-    }
+    RecurringExamCommitLog --> School
+    RecurringExamCommitLog --> Term
 
-    class StudentTransfer {
-        +id: String
-        +fromSchoolId: String
-        +toSchoolId: String
-        +status: TransferStatus
-    }
+    LessonSessionOverrideAudit --> School
+    LessonSessionOverrideAudit --> LessonSession
 
-    class Student {
-        +id: String
-    }
-
-    %% Teacher Marketplace: Teacher can work at multiple schools
-    Teacher "1" o-- "0..*" TeacherSchoolAssignment : has
-    TeacherSchoolAssignment --> School : schoolId
-    Teacher "1" *-- "0..1" TeacherMarketplaceProfile : has
-
-    %% Student Transfer: Student moves between schools
-    StudentTransfer --> Student : studentId
-    StudentTransfer --> School : fromSchoolId
-    StudentTransfer --> School : toSchoolId
+    CalendarExceptionAudit --> School
+    CalendarExceptionAudit --> Term
+    CalendarExceptionAudit --> SchoolCalendarException : optional
 ```
 
-**Relationship summary (Diagram 5):**
+**Relationship descriptions:**
 
-| From | To | Type | Cardinality |
-|------|-----|------|-------------|
-| Teacher | TeacherSchoolAssignment | Aggregation | 1 : 0..* |
-| Teacher | TeacherMarketplaceProfile | Composition | 1 : 0..1 |
-| TeacherSchoolAssignment | School | Association | N : 1 |
-| StudentTransfer | Student | Association | N : 1 |
-| StudentTransfer | School | Association | N : 1 (fromSchoolId) |
-| StudentTransfer | School | Association | N : 1 (toSchoolId) |
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | School | TermScheduleGenerationLog | Composition | 1 : 0..* | A school owns its generation run logs. Cascade delete. |
+| 2 | School | RecurringExamCommitLog | Composition | 1 : 0..* | A school owns its recurring exam commit logs. Cascade delete. |
+| 3 | School | LessonSessionOverrideAudit | Composition | 1 : 0..* | A school owns lesson session override audits. Cascade delete. |
+| 4 | School | CalendarExceptionAudit | Composition | 1 : 0..* | A school owns calendar exception audits. Cascade delete. |
+| 5 | TermScheduleGenerationLog | Term | Association | N : 1 | Each log references the term it was generated for. Cascade delete. |
+| 6 | RecurringExamCommitLog | Term | Association | N : 1 | Each log references the term. Cascade delete. |
+| 7 | LessonSessionOverrideAudit | LessonSession | Association | N : 1 | Each audit references the session that was overridden. Cascade delete. |
+| 8 | CalendarExceptionAudit | Term | Association | N : 1 | Each audit references the term. Cascade delete. |
+| 9 | CalendarExceptionAudit | SchoolCalendarException | Association | N : 0..1 | May reference the exception (null if the exception was deleted). SetNull on delete. |
 
 ---
+
+## Diagram 7: Teacher Marketplace
+
+The marketplace enables two-sided discovery: teachers opt in with a profile; schools opt in via settings; invitations flow from schools to teachers; accepted invitations create SchoolMemberships and tracked engagements; reviews build trust; needs boards let schools post openings and teachers apply.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class Teacher
+    class School
+    class TeacherMarketplaceProfile
+    class SchoolMarketplaceSettings
+    class MarketplaceInvitation
+    class MarketplaceEngagement
+    class MarketplaceReview
+    class SchoolMarketplaceNeed
+    class MarketplaceApplication
+    class SchoolMembership
+
+    Teacher "1" *-- "0..1" TeacherMarketplaceProfile
+    School "1" *-- "0..1" SchoolMarketplaceSettings
+
+    School "1" o-- "0..*" MarketplaceInvitation
+    Teacher "1" o-- "0..*" MarketplaceInvitation
+
+    MarketplaceInvitation "1" *-- "0..1" MarketplaceEngagement
+
+    School "1" o-- "0..*" MarketplaceEngagement
+    Teacher "1" o-- "0..*" MarketplaceEngagement
+
+    MarketplaceEngagement "1" *-- "0..2" MarketplaceReview
+    MarketplaceEngagement ..> SchoolMembership : references by ID
+
+    School "1" *-- "0..*" SchoolMarketplaceNeed
+    SchoolMarketplaceNeed "1" o-- "0..*" MarketplaceApplication
+    Teacher "1" o-- "0..*" MarketplaceApplication
+```
+
+**Relationship descriptions:**
+
+| # | From | To | Type | Cardinality | Description |
+|---|------|-----|------|-------------|-------------|
+| 1 | Teacher | TeacherMarketplaceProfile | Composition | 1 : 0..1 | A teacher may opt in with one marketplace profile. Cascade delete. |
+| 2 | School | SchoolMarketplaceSettings | Composition | 1 : 0..1 | A school has at most one marketplace settings row. Cascade delete. |
+| 3 | School | MarketplaceInvitation | Aggregation | 1 : 0..* | A school can send many invitations. Cascade delete. |
+| 4 | Teacher | MarketplaceInvitation | Aggregation | 1 : 0..* | A teacher can receive many invitations from different schools. Cascade delete. |
+| 5 | MarketplaceInvitation | MarketplaceEngagement | Composition | 1 : 0..1 | An accepted invitation creates exactly one engagement. Unique FK on invitationId. |
+| 6 | School | MarketplaceEngagement | Aggregation | 1 : 0..* | A school can have many active engagements. Cascade delete. |
+| 7 | Teacher | MarketplaceEngagement | Aggregation | 1 : 0..* | A teacher can have engagements at multiple schools. Cascade delete. |
+| 8 | MarketplaceEngagement | MarketplaceReview | Composition | 1 : 0..2 | Each engagement can have at most two reviews: one from the school, one from the teacher. Unique per (engagement, reviewerRole). Cascade delete. |
+| 9 | MarketplaceEngagement | SchoolMembership | Dependency | N : 0..1 | References a SchoolMembership by ID (no FK constraint). Created on acceptance to integrate teacher into school's scheduling system. |
+| 10 | School | SchoolMarketplaceNeed | Composition | 1 : 0..* | A school can post many open positions. Cascade delete. |
+| 11 | SchoolMarketplaceNeed | MarketplaceApplication | Aggregation | 1 : 0..* | A posted need can receive many applications. Cascade delete. |
+| 12 | Teacher | MarketplaceApplication | Aggregation | 1 : 0..* | A teacher can apply to many needs. Unique per (need, teacher). Cascade delete. |
+
+**Marketplace flow:**
+
+1. Teacher publishes a TeacherMarketplaceProfile (subject tags, availability, rate).
+2. School enables marketplace via SchoolMarketplaceSettings.
+3. Admin searches profiles (excludes own school teachers) and sends MarketplaceInvitation.
+4. Teacher accepts -> transaction creates SchoolMembership + MarketplaceEngagement.
+5. Teacher is now in the school's teaching pool (visible to timetable assistant, assignable to lessons).
+6. Admin ends engagement -> optionally deactivates membership -> both sides can leave MarketplaceReview.
+7. Schools post SchoolMarketplaceNeed; teachers with matching subjects see them and submit MarketplaceApplication.
+
+---
+
+## Enums Reference
+
+19 enums define the valid values for status fields, types, and categories across the domain.
+
+### Diagram 1 (Core)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **AccountType** | `SCHOOL_ADMIN`, `TEACHER`, `STUDENT`, `PARENT`, `SYSTEM_ADMIN` | Auth.accountType — determines the type of account at creation. |
+| **UserSex** | `MALE`, `FEMALE`, `OTHER` | Teacher.sex, Student.sex — demographic field on profiles. |
+
+### Diagram 2 (Academic)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **Day** | `MONDAY` .. `SUNDAY` | Lesson.day, LessonSession.day, TeacherAvailability.dayOfWeek — weekday for scheduling. |
+| **EnrollmentStatus** | `ENROLLED`, `PROMOTED`, `REPEATED`, `WITHDRAWN`, `COMPLETED`, `GRADUATED` | StudentEnrollmentHistory.status — lifecycle of a student's enrollment in a class. |
+| **CurriculumBookRole** | `primary`, `supplementary`, `workbook`, `reader`, `teacher`, `digital`, `other` | CurriculumBook.role — classification of a teaching resource. |
+
+### Diagram 3 (Scheduling & Activities)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **LessonDeliveryMode** | `IN_PERSON`, `ONLINE` | Lesson.deliveryMode, LessonSession.deliveryMode — whether teaching is physical or remote. Both count toward teacher overlap. |
+| **LessonSessionStatus** | `SCHEDULED`, `CANCELLED` | LessonSession.status — runtime state of a generated session instance. |
+| **CalendarExceptionType** | `HOLIDAY`, `BREAK`, `EXAM_PERIOD` | SchoolCalendarException.type — what kind of calendar block this is. Generation skips days inside any type. |
+| **ExamCategory** | `COURSE_EXAM`, `POP_QUIZ` | Exam.examCategory — distinguishes full exams from in-class quizzes (affects calendar badges). |
+| **AttendanceStatus** | `PRESENT`, `ABSENT`, `LATE` | Attendance.status — per-student per-lesson attendance mark. |
+| **ScheduleChangeType** | `TIME_CHANGE`, `SWAP` | ScheduleChangeRequest.requestedChangeType — what kind of schedule change a teacher requests. |
+| **RequestStatus** | `PENDING`, `APPROVED`, `REJECTED`, `CANCELED` | ScheduleChangeRequest.status — lifecycle of a teacher's schedule change request. |
+
+### Diagram 4 (Grading & Join)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **JoinCodeType** | `CLASS_STUDENT`, `TEACHER_INVITE`, `PARENT_LINK` | JoinCode.type — determines the onboarding flow: enroll parent+student, invite a teacher, or link a parent to an existing student. |
+
+### Diagram 5 (Billing)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **BillingCycle** | `MONTHLY`, `YEARLY` | SubscriptionPlan.billingCycle — payment frequency. |
+| **SubscriptionStatus** | `ACTIVE`, `CANCELED`, `PAST_DUE`, `INCOMPLETE`, `INCOMPLETE_EXPIRED`, `TRIALING`, `UNPAID` | SchoolSubscription.status — Stripe subscription lifecycle states. |
+
+### Diagram 7 (Marketplace)
+
+| Enum | Values | Used By |
+|------|--------|---------|
+| **MarketplaceInvitationStatus** | `PENDING`, `ACCEPTED`, `DECLINED`, `WITHDRAWN`, `EXPIRED` | MarketplaceInvitation.status — lifecycle of a school-to-teacher invitation. |
+| **EngagementStatus** | `ACTIVE`, `COMPLETED`, `TERMINATED` | MarketplaceEngagement.status — lifecycle of a working relationship. |
+| **ReviewerRole** | `SCHOOL`, `TEACHER` | MarketplaceReview.reviewerRole — which side left the review. Unique per (engagement, role). |
+| **ApplicationStatus** | `PENDING`, `REVIEWED`, `ACCEPTED`, `REJECTED` | MarketplaceApplication.status — lifecycle of a teacher's application to an open position. |
 
 ---
 
@@ -510,116 +624,71 @@ classDiagram
 
 ### Overview
 
-The five domain diagrams are not isolated—they share entities and form a dependency chain. Understanding these links helps when implementing features, writing queries, or tracing data flow across the system.
-
 ```
-Diagram 1 (Core) ──► Diagram 2 (Academic): School, Auth profiles
-Diagram 2 (Academic) ──► Diagram 3 (Scheduling): Class, Subject, Teacher, Student
-Diagram 1 (Core) ──► Diagram 4 (Billing): School
-Diagram 5 (Planned) ──► Diagram 1, 2: Teacher, Student, School
-```
-
----
-
-### Diagram 1 → Diagram 2 (Core → Academic)
-
-**Shared entities:** School, Teacher, Student
-
-**Why:** The academic structure is scoped to a School. Diagram 2 introduces AcademicYear, Grade, Class, Subject, Curriculum, and StudentEnrollmentHistory—all of which belong to a School. Teacher and Student from Diagram 1 are referenced in Diagram 2:
-
-| Diagram 2 entity | Depends on (Diagram 1) | How |
-|------------------|------------------------|-----|
-| AcademicYear | School | `academicYear.schoolId` → School |
-| Grade | School | `grade.schoolId` → School |
-| Subject | School | `subject.schoolId` → School |
-| Class | School, Teacher | `class.schoolId` → School; `class.supervisorId` → Teacher |
-| StudentEnrollmentHistory | Student | `enrollment.studentId` → Student |
-
-**Implication:** You cannot create an AcademicYear, Class, or Curriculum without a School. You cannot enroll a Student in a Class without the Student (and Auth) from Diagram 1.
-
----
-
-### Diagram 2 → Diagram 3 (Academic → Scheduling)
-
-**Shared entities:** Class, Subject, Teacher, Student
-
-**Why:** Scheduling and academic activities build on the academic structure. A Lesson is a time slot for a Class, taught by a Teacher, covering a Subject. Exams, Assignments, Attendance, and Results all depend on these entities.
-
-| Diagram 3 entity | Depends on (Diagram 2) | How |
-|------------------|------------------------|-----|
-| Lesson | Class, Subject, Teacher | `lesson.classId`, `lesson.subjectId`, `lesson.teacherId` |
-| Exam | Lesson | `exam.lessonId` → Lesson (Lesson links to Class, Subject, Teacher) |
-| Assignment | Lesson | `assignment.lessonId` → Lesson |
-| Attendance | Lesson, Student | `attendance.lessonId` → Lesson; `attendance.studentId` → Student |
-| Result | Student, Exam/Assignment | `result.studentId` → Student; `result.examId` or `result.assignmentId` |
-
-**Implication:** You cannot create a Lesson without a Class (which implies AcademicYear), Subject, and Teacher. Attendance and Results require Students who are enrolled in the Lesson’s Class (via StudentEnrollmentHistory). The curriculum check (Lesson’s Subject must be in the Class’s grade curriculum) crosses Diagram 2 and 3.
-
----
-
-### Diagram 1 → Diagram 4 (Core → Billing)
-
-**Shared entities:** School
-
-**Why:** Billing is at the school level. A School subscribes to a SubscriptionPlan via SchoolSubscription. SubscriptionPlan is global (not owned by any School); SchoolSubscription is the join.
-
-| Diagram 4 entity | Depends on (Diagram 1) | How |
-|------------------|------------------------|-----|
-| SchoolSubscription | School | `schoolSubscription.schoolId` → School |
-
-**Implication:** A School must exist before it can have a subscription. The School’s `stripeCustomerId` (Diagram 1) is used when creating or managing subscriptions.
-
----
-
-### Diagram 5 → Diagrams 1 & 2 (Planned → Core & Academic)
-
-**Shared entities:** Teacher, Student, School
-
-**Why:** The planned Teacher Marketplace and Student Transfer features extend the current model. They introduce new entities but rely on existing ones.
-
-| Diagram 5 entity | Depends on | How |
-|-------------------|------------|-----|
-| TeacherSchoolAssignment | Teacher, School | Links a Teacher to a School; replaces or supplements `Teacher.schoolId` for multi-school support |
-| TeacherMarketplaceProfile | Teacher | Extends Teacher with marketplace-specific fields (headline, availabilitySlots, etc.) |
-| StudentTransfer | Student, School | `fromSchoolId`, `toSchoolId` reference Schools; `studentId` references Student; transfer updates `Student.schoolId` |
-
-**Implication:** TeacherSchoolAssignment changes the Teacher–School relationship from 1:1 to N:N. StudentTransfer changes Student.schoolId when a transfer completes. Parent access may become derived from children’s schools (Diagram 1) rather than a single Parent.schoolId.
-
----
-
-### Dependency Flow (Top-Down)
-
-```
-                    ┌─────────────┐
-                    │  Diagram 1  │
-                    │   (Core)    │
-                    │ School, Auth│
-                    │ Admin, etc. │
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-       ┌──────────┐ ┌──────────┐ ┌──────────┐
-       │Diagram 2  │ │Diagram 4  │ │Diagram 5 │
-       │(Academic)│ │(Billing) │ │(Planned) │
-       └────┬─────┘ └──────────┘ └──────────┘
-            │
-            ▼
-       ┌──────────┐
-       │Diagram 3 │
-       │(Schedul.)│
-       └──────────┘
+Diagram 1 (Core) --> Diagram 2 (Academic): School, Teacher, Student
+Diagram 2 (Academic) --> Diagram 3 (Scheduling): Class, Subject, Teacher, Student, Term, AcademicYear
+Diagram 1 (Core) --> Diagram 4 (Grading / Join): School, Grade, AcademicYear
+Diagram 1 (Core) --> Diagram 5 (Billing): School
+Diagrams 2 & 3 --> Diagram 6 (Audit): School, Term, LessonSession, SchoolCalendarException
+Diagram 1 (Core) --> Diagram 7 (Marketplace): Teacher, School, SchoolMembership
 ```
 
-**Order of creation (typical):** School → Auth + profiles → AcademicYear → Grade, Subject → Class → Curriculum → StudentEnrollmentHistory → Lesson → Exam, Assignment, Attendance, Result.
+### Dependency Flow
+
+```
+                    +-------------+
+                    |  Diagram 1  |
+                    |   (Core)    |
+                    +------+------+
+                           |
+         +-----------------+-----------------+-----------+
+         |                 |                 |           |
+         v                 v                 v           v
+  +------------+    +------------+    +------------+ +------------+
+  | Diagram 2  |    | Diagram 4  |    | Diagram 5  | | Diagram 7  |
+  | (Academic) |    | (Grade/    |    | (Billing)  | |(Marketplace)|
+  |            |    |  Join)     |    |            | |            |
+  +-----+------+    +------------+    +------------+ +-----+------+
+        |                                                  |
+        v                                                  |
+  +------------+    +------------+                         |
+  | Diagram 3  |--->| Diagram 6  |                         |
+  | (Schedule) |    | (Audit)    |                         |
+  +------+-----+    +------------+                         |
+         |                                                 |
+         +------------- SchoolMembership ------------------+
+```
+
+**Key cross-diagram links:**
+
+- **Marketplace -> Core -> Scheduling**: Accepted invitations create SchoolMembership rows (Diagram 1), making marketplace teachers available to the scheduling system (Diagram 3).
+- **Scheduling -> Academic**: Lessons, sessions, exams, and attendance all reference Class, Subject, Teacher, and Term from the academic structure.
+- **Audit -> Scheduling**: Audit tables reference Term, LessonSession, and SchoolCalendarException.
+
+### Typical Setup Order
+
+School and people -> academic year, grades, subjects, terms -> classes, curriculum, enrollments -> bell periods and weekly lessons -> generated lesson sessions and exams -> assignments, attendance, results. Billing, grading, and marketplace configuration can run in parallel once the school exists.
+
+### Reverse Dependencies (Queries)
+
+- **Student schedule (dated):** Student -> Class -> LessonSession (by Term).
+- **Teacher schedule:** Teacher -> Lesson and LessonSession by date; merged across schools via SchoolMembership.
+- **Parent dashboard:** Parent -> Students (across all SchoolMembership schools) -> per-child schedule, grades, attendance.
+- **Exam calendar:** Exam -> Term, optional ExamTemplate, optional SchoolCalendarException.
+- **Marketplace search:** TeacherMarketplaceProfile (published, excluding own school) -> Teacher -> reviews via MarketplaceEngagement.
+- **Subscription limits:** School -> SchoolSubscription -> SubscriptionPlan caps.
 
 ---
 
-### Reverse Dependencies (Queries & Navigation)
+## Entity Count Summary
 
-Dependencies also flow in reverse when reading data:
-
-- **"Show a student's schedule"**: Student (1) → StudentEnrollmentHistory (2) → Class (2) → Lesson (3)
-- **"List lessons for a teacher"**: Teacher (1) → Lesson (3) → Class, Subject (2)
-- **"Check if school can add more students"**: School (1) → SchoolSubscription (4) → SubscriptionPlan (4) → maxStudents
+| Diagram | Models | Count |
+|---------|--------|-------|
+| 1. Core | School, Auth, Admin, Teacher, Student, Parent, SystemAdmin, SchoolMembership | 8 |
+| 2. Academic | AcademicYear, Term, Grade, Class, Subject, Curriculum, CurriculumBook, StudentEnrollmentHistory, TimetableGradeTemplate | 9 |
+| 3. Scheduling | Period, Lesson, LessonSession, ExamTemplate, Exam, Assignment, Attendance, Result, Room, ScheduleChangeRequest, TeacherAvailability, Event, Announcement, SchoolCalendarException | 14 |
+| 4. Grading/Join | GradingScale, GradeBand, PromotionRules, JoinCode | 4 |
+| 5. Billing | SubscriptionPlan, SchoolSubscription | 2 |
+| 6. Audit | TermScheduleGenerationLog, RecurringExamCommitLog, LessonSessionOverrideAudit, CalendarExceptionAudit | 4 |
+| 7. Marketplace | TeacherMarketplaceProfile, SchoolMarketplaceSettings, MarketplaceInvitation, MarketplaceEngagement, MarketplaceReview, SchoolMarketplaceNeed, MarketplaceApplication | 7 |
+| **Total** | | **48** |

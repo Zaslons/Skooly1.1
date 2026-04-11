@@ -34,14 +34,124 @@ import { z, type ZodIssue } from "zod";
 import { Prisma, PrismaClient } from '@prisma/client';
 import { hashPassword, generateToken, getServerUser } from './auth';
 import type { AuthUser } from './auth';
+import { teacherWhereByIdInSchool, userHasSchoolAccess } from "./schoolAccess";
 import { getActiveSchoolSubscription } from './subscriptionUtils'; // NEW: Import for subscription checks
 import { 
   convertToDateTime, // Added
   formatDateTimeToTimeString // Added
 } from "./utils"; 
-import { Day, ScheduleChangeType as PrismaScheduleChangeType, RequestStatus as PrismaRequestStatus } from "@prisma/client"; // Added ScheduleChangeType
+import {
+  CalendarExceptionType,
+  Day,
+  ExamCategory,
+  LessonDeliveryMode,
+  ScheduleChangeType as PrismaScheduleChangeType,
+  RequestStatus as PrismaRequestStatus,
+} from "@prisma/client"; // Added ScheduleChangeType
+import { computeDueDateForAssignment } from "./domain/assignmentDueDate";
+import {
+  assertSetupStepReadyOrThrow,
+  TemporalRuleError,
+} from "@/lib/domain/temporalRules";
+import {
+  BellPeriodError,
+  mergePeriodTimesOntoAnchor,
+  computeLessonTimesFromPeriodSpan,
+  validateLessonTimesAgainstBellPolicy,
+  validateLessonPeriodSpan,
+  type PeriodTimeSlice,
+} from "@/lib/domain/bellPeriodRules";
+import { generateTermLessons } from "@/lib/domain/termLessonGenerationRules";
+import { findFirstOverlappingLessonForTeacher } from "@/lib/domain/lessonTeacherOverlap";
 
 type CurrentState = { success: boolean; error: boolean; message?: string };
+
+/** Per-lesson hook after manual create. Batch flows (e.g. timetable assistant) call `generateTermLessons` once per term with class scope instead. */
+async function syncLessonTemplateToCurrentTermSessions(params: {
+  schoolId: string;
+  lessonId: number;
+  classId: number;
+}) {
+  const { schoolId, lessonId, classId } = params;
+  const now = new Date();
+  const currentTerms = await prisma.term.findMany({
+    where: {
+      schoolId,
+      isArchived: false,
+      startDate: { lte: now },
+      endDate: { gte: now },
+    },
+    select: { id: true },
+  });
+
+  for (const term of currentTerms) {
+    try {
+      await generateTermLessons({
+        schoolId,
+        termId: term.id,
+        mode: "commit",
+        requestId: `auto-lesson-sync-${lessonId}-${term.id}`,
+        idempotencyKey: `auto-lesson-sync-${lessonId}-${term.id}-${Date.now()}`,
+        scope: { type: "class", classId },
+      });
+    } catch (error) {
+      console.error("Auto lesson-session sync failed", {
+        schoolId,
+        lessonId,
+        classId,
+        termId: term.id,
+        error,
+      });
+    }
+  }
+
+  const lessonTemplate = await prisma.lesson.findUnique({
+    where: { id: lessonId, schoolId },
+    select: {
+      startTime: true,
+      endTime: true,
+      deliveryMode: true,
+      meetingUrl: true,
+      meetingLabel: true,
+    },
+  });
+  if (!lessonTemplate) return;
+
+  const startHourUtc = lessonTemplate.startTime.getUTCHours();
+  const startMinuteUtc = lessonTemplate.startTime.getUTCMinutes();
+  const endHourUtc = lessonTemplate.endTime.getUTCHours();
+  const endMinuteUtc = lessonTemplate.endTime.getUTCMinutes();
+
+  const sessions = await prisma.lessonSession.findMany({
+    where: {
+      schoolId,
+      templateLessonId: lessonId,
+      termId: { in: currentTerms.map((t) => t.id) },
+    },
+    select: { id: true, sessionDate: true },
+  });
+
+  for (const session of sessions) {
+    const startTime = new Date(session.sessionDate);
+    startTime.setUTCHours(startHourUtc, startMinuteUtc, 0, 0);
+    const endTime = new Date(session.sessionDate);
+    endTime.setUTCHours(endHourUtc, endMinuteUtc, 0, 0);
+    if (endTime <= startTime) {
+      endTime.setUTCDate(endTime.getUTCDate() + 1);
+    }
+    const isOnline = lessonTemplate.deliveryMode === LessonDeliveryMode.ONLINE;
+    await prisma.lessonSession.update({
+      where: { id: session.id },
+      data: {
+        startTime,
+        endTime,
+        deliveryMode: lessonTemplate.deliveryMode,
+        meetingUrl: isOnline ? lessonTemplate.meetingUrl : null,
+        meetingLabel: isOnline ? lessonTemplate.meetingLabel : null,
+      },
+    });
+  }
+}
 
 export const createSubject = async (
   currentState: ActionState,
@@ -868,6 +978,7 @@ export const createExam = async (
 ): Promise<CurrentState> => {
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "gridInitialization");
 
     // Validate that the referenced Lesson belongs to the same school
     const lesson = await prisma.lesson.findUnique({
@@ -875,15 +986,61 @@ export const createExam = async (
         select: { id: true }
     });
     if (!lesson) {
-        return { success: false, error: true };
+        return { success: false, error: true, message: "Selected lesson not found in this school." };
+    }
+
+    const authUser = await getVerifiedAuthUser();
+    if (authUser?.role === "teacher" && authUser.profileId) {
+      const lessonTeacher = await prisma.lesson.findUnique({
+        where: { id: data.lessonId, schoolId },
+        select: { teacherId: true },
+      });
+      if (lessonTeacher?.teacherId !== authUser.profileId) {
+        return {
+          success: false,
+          error: true,
+          message: "You can only link exams to lessons you teach.",
+        };
+      }
+    }
+
+    const startTime = new Date(data.startTime);
+    const endTime = new Date(startTime.getTime() + data.durationMinutes * 60 * 1000);
+    let resolvedTermId: string | null = null;
+
+    if (data.examPeriodId) {
+      const examPeriod = await prisma.schoolCalendarException.findFirst({
+        where: { id: data.examPeriodId, schoolId, type: CalendarExceptionType.EXAM_PERIOD },
+        select: { id: true, termId: true },
+      });
+      if (!examPeriod) {
+        return { success: false, error: true, message: "Selected exam period is invalid for this school." };
+      }
+      const examPeriodTerm = await prisma.term.findFirst({
+        where: { id: examPeriod.termId, schoolId, startDate: { lte: startTime }, endDate: { gte: startTime } },
+        select: { id: true },
+      });
+      if (!examPeriodTerm) {
+        return {
+          success: false,
+          error: true,
+          message: "Exam start time must be inside the selected exam period term.",
+        };
+      }
+      resolvedTermId = examPeriod.termId;
     }
 
     await prisma.exam.create({
       data: {
         title: data.title,
-        startTime: data.startTime,
-        endTime: data.endTime,
+        startTime,
+        endTime,
+        durationMinutes: data.durationMinutes,
+        isRecurring: data.isRecurring ?? false,
+        examCategory: data.examCategory ?? ExamCategory.COURSE_EXAM,
         lessonId: data.lessonId,
+        examPeriodId: data.examPeriodId ?? null,
+        termId: resolvedTermId,
         schoolId: schoolId,
         maxScore: data.maxScore ?? 100,
         weight: data.weight ?? 1.0,
@@ -894,6 +1051,9 @@ export const createExam = async (
     return { success: true, error: false };
   } catch (err) {
     console.error("Error creating exam:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true };
   }
 };
@@ -907,13 +1067,29 @@ export const updateExam = async (
   }
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "gridInitialization");
 
     // Validate Lesson belongs to the school
     const lesson = await prisma.lesson.findUnique({
         where: { id: data.lessonId, schoolId: schoolId }, select: { id: true }
     });
     if (!lesson) {
-        return { success: false, error: true };
+        return { success: false, error: true, message: "Selected lesson not found in this school." };
+    }
+
+    const authUser = await getVerifiedAuthUser();
+    if (authUser?.role === "teacher" && authUser.profileId) {
+      const lessonTeacher = await prisma.lesson.findUnique({
+        where: { id: data.lessonId, schoolId },
+        select: { teacherId: true },
+      });
+      if (lessonTeacher?.teacherId !== authUser.profileId) {
+        return {
+          success: false,
+          error: true,
+          message: "You can only link exams to lessons you teach.",
+        };
+      }
     }
 
     // Verify Exam belongs to the school before update
@@ -921,7 +1097,33 @@ export const updateExam = async (
         where: { id: data.id, schoolId: schoolId }, select: { id: true }
     });
     if (!examExists) {
-        return { success: false, error: true };
+        return { success: false, error: true, message: "Exam not found in this school." };
+    }
+
+    const startTime = new Date(data.startTime);
+    const endTime = new Date(startTime.getTime() + data.durationMinutes * 60 * 1000);
+    let resolvedTermId: string | null = null;
+
+    if (data.examPeriodId) {
+      const examPeriod = await prisma.schoolCalendarException.findFirst({
+        where: { id: data.examPeriodId, schoolId, type: CalendarExceptionType.EXAM_PERIOD },
+        select: { id: true, termId: true },
+      });
+      if (!examPeriod) {
+        return { success: false, error: true, message: "Selected exam period is invalid for this school." };
+      }
+      const examPeriodTerm = await prisma.term.findFirst({
+        where: { id: examPeriod.termId, schoolId, startDate: { lte: startTime }, endDate: { gte: startTime } },
+        select: { id: true },
+      });
+      if (!examPeriodTerm) {
+        return {
+          success: false,
+          error: true,
+          message: "Exam start time must be inside the selected exam period term.",
+        };
+      }
+      resolvedTermId = examPeriod.termId;
     }
 
     await prisma.exam.update({
@@ -931,9 +1133,14 @@ export const updateExam = async (
       },
       data: {
         title: data.title,
-        startTime: data.startTime,
-        endTime: data.endTime,
+        startTime,
+        endTime,
+        durationMinutes: data.durationMinutes,
+        isRecurring: data.isRecurring ?? false,
+        examCategory: data.examCategory ?? ExamCategory.COURSE_EXAM,
         lessonId: data.lessonId,
+        examPeriodId: data.examPeriodId ?? null,
+        ...(data.examPeriodId ? { termId: resolvedTermId } : {}),
         maxScore: data.maxScore ?? 100,
         weight: data.weight ?? 1.0,
       },
@@ -943,6 +1150,9 @@ export const updateExam = async (
     return { success: true, error: false };
   } catch (err) {
     console.error("Error updating exam:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true };
   }
 };
@@ -985,6 +1195,21 @@ export const deleteExam = async (
   }
 };
 
+/** Active bell periods for a school — same shape as `createLesson` / `updateLesson`. */
+async function fetchActivePeriodSlicesForSchool(schoolId: string): Promise<PeriodTimeSlice[]> {
+  const rows = await prisma.period.findMany({
+    where: { schoolId, isArchived: false },
+    orderBy: [{ order: "asc" }, { name: "asc" }],
+    select: { id: true, name: true, startTime: true, endTime: true },
+  });
+  return rows.map((p) => ({
+    id: p.id,
+    name: p.name,
+    startTime: new Date(p.startTime),
+    endTime: new Date(p.endTime),
+  }));
+}
+
 // ExamTemplate actions (weekly exam templates)
 export const createExamTemplate = async (
   currentState: CurrentState,
@@ -992,6 +1217,9 @@ export const createExamTemplate = async (
 ): Promise<CurrentState> => {
   try {
     const schoolId = await getCurrentUserSchoolId();
+    // DS recurring exam templates are part of the optional DS step,
+    // but they depend on the required setup chain to be completed first.
+    await assertSetupStepReadyOrThrow(schoolId, "dsRecurringExams");
 
     // Validate Term belongs to school
     const term = await prisma.term.findFirst({
@@ -1056,21 +1284,14 @@ export const createExamTemplate = async (
       };
     }
 
-    // Default bell hours check (kept consistent with lesson validation)
-    const DEFAULT_WORK_START_HOUR = 8;
-    const DEFAULT_WORK_END_HOUR = 17;
-    const startHour = start.getHours();
-    const endHour = end.getHours();
-    const endMinutes = end.getMinutes();
-    const isWithinDefaultHours =
-      startHour >= DEFAULT_WORK_START_HOUR &&
-      (endHour < DEFAULT_WORK_END_HOUR || (endHour === DEFAULT_WORK_END_HOUR && endMinutes === 0));
-    if (!isWithinDefaultHours) {
-      return {
-        success: false,
-        error: true,
-        message: `Exam template time must be within ${DEFAULT_WORK_START_HOUR}:00 - ${DEFAULT_WORK_END_HOUR}:00`,
-      };
+    const activePeriodSlices = await fetchActivePeriodSlicesForSchool(schoolId);
+    try {
+      validateLessonTimesAgainstBellPolicy(start, end, activePeriodSlices, { slotKind: "examTemplate" });
+    } catch (e) {
+      if (e instanceof BellPeriodError) {
+        return { success: false, error: true, message: e.message };
+      }
+      throw e;
     }
 
     await prisma.examTemplate.create({
@@ -1095,6 +1316,9 @@ export const createExamTemplate = async (
     return { success: true, error: false, message: "Exam template created successfully." };
   } catch (err) {
     console.error("Error creating exam template:", err);
+    if (err instanceof BellPeriodError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to create exam template." };
   }
 };
@@ -1108,6 +1332,7 @@ export const updateExamTemplate = async (
   }
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "curriculumMapping");
 
     // Validate Term
     const term = await prisma.term.findFirst({
@@ -1161,6 +1386,27 @@ export const updateExamTemplate = async (
       return { success: false, error: true, message: "End time must be after start time." };
     }
 
+    const day = data.day;
+    if (day === Day.SATURDAY || day === Day.SUNDAY) {
+      return {
+        success: false,
+        error: true,
+        message: "Exam templates cannot be scheduled on weekends (customize if you need).",
+      };
+    }
+
+    const activePeriodSlicesUpdateEt = await fetchActivePeriodSlicesForSchool(schoolId);
+    try {
+      validateLessonTimesAgainstBellPolicy(start, end, activePeriodSlicesUpdateEt, {
+        slotKind: "examTemplate",
+      });
+    } catch (e) {
+      if (e instanceof BellPeriodError) {
+        return { success: false, error: true, message: e.message };
+      }
+      throw e;
+    }
+
     const examTemplateExists = await prisma.examTemplate.findFirst({
       where: { id: data.id, schoolId: schoolId },
       select: { id: true },
@@ -1188,6 +1434,12 @@ export const updateExamTemplate = async (
     return { success: true, error: false, message: "Exam template updated successfully." };
   } catch (err) {
     console.error("Error updating exam template:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
+    if (err instanceof BellPeriodError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to update exam template." };
   }
 };
@@ -1225,18 +1477,33 @@ export const createLesson = async (
   data: LessonSchema
 ): Promise<ActionState> => {
   try {
-    const authUser = await getVerifiedAuthUser(); // Get authenticated user
-    if (!authUser || !authUser.schoolId) {
+    const authUser = await getVerifiedAuthUser();
+    if (!authUser) {
       return { success: false, error: true, message: "User not authenticated or not associated with a school." };
     }
-    const schoolId = authUser.schoolId; // Use schoolId from authenticated user
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
+      return { success: false, error: true, message: "User not associated with a school." };
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
+    }
+    // Align lesson setup mutability with the E2 setup-step locking model.
+    // Creating the first lessons is part of `gridInitialization`, so we only gate on
+    // prerequisites up to `temporalInitialization` (static + temporal).
+    await assertSetupStepReadyOrThrow(schoolId, "temporalInitialization");
 
     // Validate related entities belong to the same school
     const subject = await prisma.subject.findUnique({ where: { id: data.subjectId, schoolId: schoolId }, select: { id: true } });
     if (!subject) return { success: false, error: true, message: "Selected subject not found in this school." };
     const classExists = await prisma.class.findUnique({ where: { id: data.classId, schoolId: schoolId }, select: { id: true } });
     if (!classExists) return { success: false, error: true, message: "Selected class not found in this school." };
-    const teacher = await prisma.teacher.findUnique({ where: { id: data.teacherId, schoolId: schoolId }, select: { id: true } });
+    const teacher = await prisma.teacher.findFirst({
+      where: teacherWhereByIdInSchool(data.teacherId, schoolId),
+      select: { id: true },
+    });
     if (!teacher) return { success: false, error: true, message: "Selected teacher not found in this school." };
 
     // --- NEW: Validate Room if roomId is provided ---
@@ -1247,16 +1514,101 @@ export const createLesson = async (
     // --- END NEW ---
 
     // MODIFIED Teacher Availability Check Logic (Default Available 8 AM - 5 PM Weekdays)
-    const lessonStartTime = new Date(data.startTime); 
-    const lessonEndTime = new Date(data.endTime);   
+    let lessonStartTime = new Date(data.startTime);
+    let lessonEndTime = new Date(data.endTime);
 
     if (lessonEndTime <= lessonStartTime) {
         return { success: false, error: true, message: "Lesson end time must be after start time." };
     }
 
-    // Define default working hours (example: 8 AM to 5 PM)
-    const DEFAULT_WORK_START_HOUR = 8;
-    const DEFAULT_WORK_END_HOUR = 17;
+    const activePeriodRows = await prisma.period.findMany({
+      where: { schoolId, isArchived: false },
+      orderBy: [{ order: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, startTime: true, endTime: true },
+    });
+    const activePeriodSlices: PeriodTimeSlice[] = activePeriodRows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      startTime: new Date(p.startTime),
+      endTime: new Date(p.endTime),
+    }));
+    const activePeriodCount = activePeriodRows.length;
+
+    let policyPeriodSpan:
+      | { startPeriod: PeriodTimeSlice; endPeriod: PeriodTimeSlice }
+      | undefined;
+    if (activePeriodCount > 0) {
+      if (!data.periodId) {
+        return { success: false, error: true, message: "Bell period is required when the school has active periods." };
+      }
+      const period = await prisma.period.findFirst({
+        where: { id: data.periodId, schoolId, isArchived: false },
+      });
+      if (!period) {
+        return { success: false, error: true, message: "Selected bell period was not found or is archived." };
+      }
+      const anchor = lessonStartTime;
+      if (data.endPeriodId && data.endPeriodId !== data.periodId) {
+        try {
+          await validateLessonPeriodSpan(schoolId, data.periodId, data.endPeriodId, prisma);
+        } catch (e) {
+          if (e instanceof BellPeriodError) {
+            return { success: false, error: true, message: e.message };
+          }
+          throw e;
+        }
+        const endPeriod = await prisma.period.findFirst({
+          where: { id: data.endPeriodId, schoolId, isArchived: false },
+        });
+        if (!endPeriod) {
+          return { success: false, error: true, message: "End period was not found or is archived." };
+        }
+        const spanTimes = computeLessonTimesFromPeriodSpan(anchor, period, endPeriod);
+        lessonStartTime = spanTimes.startTime;
+        lessonEndTime = spanTimes.endTime;
+        policyPeriodSpan = {
+          startPeriod: {
+            id: period.id,
+            name: period.name,
+            startTime: new Date(period.startTime),
+            endTime: new Date(period.endTime),
+          },
+          endPeriod: {
+            id: endPeriod.id,
+            name: endPeriod.name,
+            startTime: new Date(endPeriod.startTime),
+            endTime: new Date(endPeriod.endTime),
+          },
+        };
+      } else {
+        const merged = mergePeriodTimesOntoAnchor(anchor, {
+          startTime: new Date(period.startTime),
+          endTime: new Date(period.endTime),
+        });
+        lessonStartTime = merged.startTime;
+        lessonEndTime = merged.endTime;
+      }
+    } else if (data.periodId) {
+      const period = await prisma.period.findFirst({
+        where: { id: data.periodId, schoolId, isArchived: false },
+      });
+      if (period) {
+        try {
+          const merged = mergePeriodTimesOntoAnchor(lessonStartTime, {
+            startTime: new Date(period.startTime),
+            endTime: new Date(period.endTime),
+          });
+          lessonStartTime = merged.startTime;
+          lessonEndTime = merged.endTime;
+        } catch (e) {
+          if (e instanceof BellPeriodError) {
+            return { success: false, error: true, message: e.message };
+          }
+          throw e;
+        }
+      }
+    }
+
     const lessonDay = data.day; // This is PrismaDay enum: MONDAY, TUESDAY, etc.
 
     // Check if lesson is on a weekend (assuming default unavailable)
@@ -1269,23 +1621,15 @@ export const createLesson = async (
         };
     }
 
-    // Check if lesson time is within default working hours for weekdays
-    const lessonStartHour = lessonStartTime.getHours();
-    const lessonEndHour = lessonEndTime.getHours();
-    const lessonEndMinutes = lessonEndTime.getMinutes();
-    
-    // Lesson must start on or after default start and end at or before default end.
-    // A lesson ending at 17:00 is fine. A lesson ending at 17:01 is not.
-    const isWithinDefaultHours = 
-        lessonStartHour >= DEFAULT_WORK_START_HOUR &&
-        (lessonEndHour < DEFAULT_WORK_END_HOUR || (lessonEndHour === DEFAULT_WORK_END_HOUR && lessonEndMinutes === 0));
-
-    if (!isWithinDefaultHours) {
-        return {
-            success: false,
-            error: true,
-            message: `Lesson time is outside default working hours (${DEFAULT_WORK_START_HOUR}:00 - ${DEFAULT_WORK_END_HOUR}:00 for weekdays).`
-        };
+    try {
+      validateLessonTimesAgainstBellPolicy(lessonStartTime, lessonEndTime, activePeriodSlices, {
+        periodSpan: policyPeriodSpan,
+      });
+    } catch (e) {
+      if (e instanceof BellPeriodError) {
+        return { success: false, error: true, message: e.message };
+      }
+      throw e;
     }
 
     // Fetch only UNAVAILABLE slots for conflict checking
@@ -1298,8 +1642,8 @@ export const createLesson = async (
         }
     });
 
-    const lessonStartActual = new Date(data.startTime); 
-    const lessonEndActual = new Date(data.endTime);     
+    const lessonStartActual = lessonStartTime;
+    const lessonEndActual = lessonEndTime;
 
     // Check for conflicts with any "UNAVAILABLE" slots.
     const conflictingUnavailableSlot = unavailableSlots.find(slot => {
@@ -1329,24 +1673,23 @@ export const createLesson = async (
     }
     // END: MODIFIED Teacher Availability Check
 
-    // Existing Teacher Lesson Conflict Check (different from availability)
-    const overlappingLesson = await prisma.lesson.findFirst({
-      where: {
-        schoolId: schoolId,
-        teacherId: data.teacherId,
-        day: data.day,
-        startTime: { lt: data.endTime },
-        endTime: { gt: data.startTime },
-        id: data.id ? { not: data.id } : undefined, // Exclude self if an update
-      },
-      select: { id: true }
+    const overlappingLesson = await findFirstOverlappingLessonForTeacher(prisma, {
+      schoolId,
+      teacherId: data.teacherId,
+      day: data.day,
+      lessonStartTime: lessonStartTime,
+      lessonEndTime: lessonEndTime,
+      excludeLessonId: data.id,
     });
 
     if (overlappingLesson) {
+      const sameSchool = overlappingLesson.schoolId === schoolId;
       return {
         success: false,
         error: true,
-        message: "Teacher scheduling conflict: The selected teacher already has another lesson scheduled during this time."
+        message: sameSchool
+          ? "Teacher scheduling conflict: This teacher already has another lesson at this time."
+          : "Teacher scheduling conflict: This teacher already has a lesson at this time in another school.",
       };
     }
 
@@ -1356,8 +1699,8 @@ export const createLesson = async (
         schoolId: schoolId,
         classId: data.classId, 
         day: data.day,
-        startTime: { lt: data.endTime },
-        endTime: { gt: data.startTime },
+        startTime: { lt: lessonEndTime },
+        endTime: { gt: lessonStartTime },
         id: data.id ? { not: data.id } : undefined, // Exclude self if an update
       },
       select: { id: true }
@@ -1371,18 +1714,35 @@ export const createLesson = async (
       };
     }
 
-    await prisma.lesson.create({
+    const endPeriodIdToPersist =
+      activePeriodCount > 0 && data.endPeriodId && data.endPeriodId !== data.periodId ? data.endPeriodId : null;
+
+    const deliveryMode = data.deliveryMode ?? LessonDeliveryMode.IN_PERSON;
+    const isOnlineCreate = deliveryMode === LessonDeliveryMode.ONLINE;
+    const createdLesson = await prisma.lesson.create({
       data: {
         name: data.name,
         day: data.day,
-        startTime: lessonStartTime, // Use Date objects
-        endTime: lessonEndTime,     // Use Date objects
+        startTime: lessonStartTime,
+        endTime: lessonEndTime,
         subjectId: data.subjectId,
         classId: data.classId,
         teacherId: data.teacherId,
-        roomId: data.roomId || null, // --- NEW: Add roomId ---
+        roomId:
+          deliveryMode === LessonDeliveryMode.ONLINE ? null : data.roomId || null,
+        deliveryMode,
+        meetingUrl: isOnlineCreate ? data.meetingUrl ?? null : null,
+        meetingLabel: isOnlineCreate ? data.meetingLabel ?? null : null,
         schoolId: schoolId,
+        periodId: data.periodId ?? null,
+        endPeriodId: endPeriodIdToPersist,
       },
+    });
+
+    await syncLessonTemplateToCurrentTermSessions({
+      schoolId,
+      lessonId: createdLesson.id,
+      classId: createdLesson.classId,
     });
 
     revalidatePath(`/schools/${schoolId}/list/lessons`); // Ensure this path matches admin lesson list
@@ -1390,6 +1750,12 @@ export const createLesson = async (
     return { success: true, error: false, message: "Lesson created successfully." };
   } catch (err) {
     console.error("Error creating lesson:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
+    if (err instanceof BellPeriodError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to create lesson." };
   }
 };
@@ -1402,11 +1768,20 @@ export const updateLesson = async (
     return { success: false, error: true, message: "Lesson ID missing." };
   }
   try {
-    const authUser = await getVerifiedAuthUser(); // Get authenticated user
-    if (!authUser || !authUser.schoolId) {
+    const authUser = await getVerifiedAuthUser();
+    if (!authUser) {
       return { success: false, error: true, message: "User not authenticated or not associated with a school." };
     }
-    const schoolId = authUser.schoolId; // Use schoolId from authenticated user
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
+      return { success: false, error: true, message: "User not associated with a school." };
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
+    }
+    await assertSetupStepReadyOrThrow(schoolId, "temporalInitialization");
 
     // Verify the lesson being updated belongs to the school
     const lessonExists = await prisma.lesson.findUnique({ where: { id: data.id, schoolId: schoolId }, select: { id: true } });
@@ -1417,7 +1792,10 @@ export const updateLesson = async (
     if (!subject) return { success: false, error: true, message: "Selected subject not found in this school." };
     const classExists = await prisma.class.findUnique({ where: { id: data.classId, schoolId: schoolId }, select: { id: true } });
     if (!classExists) return { success: false, error: true, message: "Selected class not found in this school." };
-    const teacher = await prisma.teacher.findUnique({ where: { id: data.teacherId, schoolId: schoolId }, select: { id: true } });
+    const teacher = await prisma.teacher.findFirst({
+      where: teacherWhereByIdInSchool(data.teacherId, schoolId),
+      select: { id: true },
+    });
     if (!teacher) return { success: false, error: true, message: "Selected teacher not found in this school." };
 
     // --- NEW: Validate Room if roomId is provided ---
@@ -1428,16 +1806,102 @@ export const updateLesson = async (
     // --- END NEW ---
 
     // MODIFIED Teacher Availability Check Logic (Default Available 8 AM - 5 PM Weekdays)
-    const lessonStartTime = new Date(data.startTime);
-    const lessonEndTime = new Date(data.endTime);
+    let lessonStartTime = new Date(data.startTime);
+    let lessonEndTime = new Date(data.endTime);
 
     if (lessonEndTime <= lessonStartTime) {
         return { success: false, error: true, message: "Lesson end time must be after start time." };
     }
 
-    const DEFAULT_WORK_START_HOUR = 8;
-    const DEFAULT_WORK_END_HOUR = 17;
-    const lessonDay = data.day; 
+    const activePeriodRowsUpdate = await prisma.period.findMany({
+      where: { schoolId, isArchived: false },
+      orderBy: [{ order: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, startTime: true, endTime: true },
+    });
+    const activePeriodSlicesUpdate: PeriodTimeSlice[] = activePeriodRowsUpdate.map((p) => ({
+      id: p.id,
+      name: p.name,
+      startTime: new Date(p.startTime),
+      endTime: new Date(p.endTime),
+    }));
+    const activePeriodCountUpdate = activePeriodRowsUpdate.length;
+
+    let policyPeriodSpanUpdate:
+      | { startPeriod: PeriodTimeSlice; endPeriod: PeriodTimeSlice }
+      | undefined;
+    if (activePeriodCountUpdate > 0) {
+      if (!data.periodId) {
+        return { success: false, error: true, message: "Bell period is required when the school has active periods." };
+      }
+      const period = await prisma.period.findFirst({
+        where: { id: data.periodId, schoolId, isArchived: false },
+      });
+      if (!period) {
+        return { success: false, error: true, message: "Selected bell period was not found or is archived." };
+      }
+      const anchor = lessonStartTime;
+      if (data.endPeriodId && data.endPeriodId !== data.periodId) {
+        try {
+          await validateLessonPeriodSpan(schoolId, data.periodId, data.endPeriodId, prisma);
+        } catch (e) {
+          if (e instanceof BellPeriodError) {
+            return { success: false, error: true, message: e.message };
+          }
+          throw e;
+        }
+        const endPeriod = await prisma.period.findFirst({
+          where: { id: data.endPeriodId, schoolId, isArchived: false },
+        });
+        if (!endPeriod) {
+          return { success: false, error: true, message: "End period was not found or is archived." };
+        }
+        const spanTimes = computeLessonTimesFromPeriodSpan(anchor, period, endPeriod);
+        lessonStartTime = spanTimes.startTime;
+        lessonEndTime = spanTimes.endTime;
+        policyPeriodSpanUpdate = {
+          startPeriod: {
+            id: period.id,
+            name: period.name,
+            startTime: new Date(period.startTime),
+            endTime: new Date(period.endTime),
+          },
+          endPeriod: {
+            id: endPeriod.id,
+            name: endPeriod.name,
+            startTime: new Date(endPeriod.startTime),
+            endTime: new Date(endPeriod.endTime),
+          },
+        };
+      } else {
+        const merged = mergePeriodTimesOntoAnchor(anchor, {
+          startTime: new Date(period.startTime),
+          endTime: new Date(period.endTime),
+        });
+        lessonStartTime = merged.startTime;
+        lessonEndTime = merged.endTime;
+      }
+    } else if (data.periodId) {
+      const period = await prisma.period.findFirst({
+        where: { id: data.periodId, schoolId, isArchived: false },
+      });
+      if (period) {
+        try {
+          const merged = mergePeriodTimesOntoAnchor(lessonStartTime, {
+            startTime: new Date(period.startTime),
+            endTime: new Date(period.endTime),
+          });
+          lessonStartTime = merged.startTime;
+          lessonEndTime = merged.endTime;
+        } catch (e) {
+          if (e instanceof BellPeriodError) {
+            return { success: false, error: true, message: e.message };
+          }
+          throw e;
+        }
+      }
+    }
+
+    const lessonDay = data.day;
 
     if (lessonDay === Day.SATURDAY || lessonDay === Day.SUNDAY) {
         const dayString: string = lessonDay; // Explicitly type as string
@@ -1448,20 +1912,15 @@ export const updateLesson = async (
         };
     }
 
-    const lessonStartHour = lessonStartTime.getHours();
-    const lessonEndHour = lessonEndTime.getHours();
-    const lessonEndMinutes = lessonEndTime.getMinutes();
-
-    const isWithinDefaultHours = 
-        lessonStartHour >= DEFAULT_WORK_START_HOUR &&
-        (lessonEndHour < DEFAULT_WORK_END_HOUR || (lessonEndHour === DEFAULT_WORK_END_HOUR && lessonEndMinutes === 0));
-
-    if (!isWithinDefaultHours) {
-        return {
-            success: false,
-            error: true,
-            message: `Lesson time is outside default working hours (${DEFAULT_WORK_START_HOUR}:00 - ${DEFAULT_WORK_END_HOUR}:00 for weekdays).`
-        };
+    try {
+      validateLessonTimesAgainstBellPolicy(lessonStartTime, lessonEndTime, activePeriodSlicesUpdate, {
+        periodSpan: policyPeriodSpanUpdate,
+      });
+    } catch (e) {
+      if (e instanceof BellPeriodError) {
+        return { success: false, error: true, message: e.message };
+      }
+      throw e;
     }
 
     const unavailableSlots = await prisma.teacherAvailability.findMany({
@@ -1473,8 +1932,8 @@ export const updateLesson = async (
         }
     });
 
-    const lessonStartActual = new Date(data.startTime); // Actual lesson start datetime
-    const lessonEndActual = new Date(data.endTime);   // Actual lesson end datetime
+    const lessonStartActual = lessonStartTime;
+    const lessonEndActual = lessonEndTime;
 
     const conflictingUnavailableSlot = unavailableSlots.find(slot => {
         const dbSlotStart = new Date(slot.startTime); // Slot start from DB (reference date)
@@ -1502,24 +1961,23 @@ export const updateLesson = async (
     }
     // END: MODIFIED Teacher Availability Check
 
-    // Existing Teacher Lesson Conflict Check
-    const overlappingLesson = await prisma.lesson.findFirst({
-      where: {
-        schoolId: schoolId,
-        teacherId: data.teacherId,
-        day: data.day,
-        id: { not: data.id }, // Exclude the current lesson being updated
-        startTime: { lt: lessonEndTime }, // Use Date objects for comparison
-        endTime: { gt: lessonStartTime }, // Use Date objects for comparison
-      },
-       select: { id: true }
+    const overlappingLesson = await findFirstOverlappingLessonForTeacher(prisma, {
+      schoolId,
+      teacherId: data.teacherId,
+      day: data.day,
+      lessonStartTime: lessonStartTime,
+      lessonEndTime: lessonEndTime,
+      excludeLessonId: data.id,
     });
 
     if (overlappingLesson) {
+      const sameSchool = overlappingLesson.schoolId === schoolId;
       return {
         success: false,
         error: true,
-        message: "Teacher scheduling conflict: The selected teacher already has another lesson scheduled during this time."
+        message: sameSchool
+          ? "Teacher scheduling conflict: This teacher already has another lesson at this time."
+          : "Teacher scheduling conflict: This teacher already has a lesson at this time in another school.",
       };
     }
 
@@ -1544,6 +2002,11 @@ export const updateLesson = async (
       };
     }
 
+    const endPeriodIdToPersist =
+      activePeriodCountUpdate > 0 && data.endPeriodId && data.endPeriodId !== data.periodId ? data.endPeriodId : null;
+
+    const deliveryModeUpdate = data.deliveryMode ?? LessonDeliveryMode.IN_PERSON;
+    const isOnlineUpdate = deliveryModeUpdate === LessonDeliveryMode.ONLINE;
     await prisma.lesson.update({
       where: {
         id: data.id,
@@ -1552,13 +2015,27 @@ export const updateLesson = async (
       data: {
         name: data.name,
         day: data.day,
-        startTime: lessonStartTime, // Use Date objects
-        endTime: lessonEndTime,     // Use Date objects
+        startTime: lessonStartTime,
+        endTime: lessonEndTime,
         subjectId: data.subjectId,
         classId: data.classId,
         teacherId: data.teacherId,
-        roomId: data.roomId || null, // --- NEW: Add roomId ---
+        roomId:
+          deliveryModeUpdate === LessonDeliveryMode.ONLINE
+            ? null
+            : data.roomId || null,
+        deliveryMode: deliveryModeUpdate,
+        meetingUrl: isOnlineUpdate ? data.meetingUrl ?? null : null,
+        meetingLabel: isOnlineUpdate ? data.meetingLabel ?? null : null,
+        periodId: data.periodId ?? null,
+        endPeriodId: endPeriodIdToPersist,
       },
+    });
+
+    await syncLessonTemplateToCurrentTermSessions({
+      schoolId,
+      lessonId: data.id,
+      classId: data.classId,
     });
 
     revalidatePath(`/schools/${schoolId}/list/lessons`);
@@ -1566,6 +2043,9 @@ export const updateLesson = async (
     return { success: true, error: false, message: "Lesson updated successfully." };
   } catch (err) {
     console.error("Error updating lesson:", err);
+    if (err instanceof BellPeriodError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to update lesson." };
   }
 };
@@ -1638,6 +2118,18 @@ export const updateLessonTime = async (
 
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "temporalInitialization");
+
+    const activePeriodCount = await prisma.period.count({
+      where: { schoolId, isArchived: false },
+    });
+    if (activePeriodCount > 0) {
+      return {
+        success: false,
+        error: true,
+        message: "Lesson times are locked to bell periods. Edit the lesson to change its period(s).",
+      };
+    }
 
     // 1. Fetch the original lesson to get teacherId and classId
     const originalLesson = await prisma.lesson.findUnique({
@@ -1649,17 +2141,14 @@ export const updateLessonTime = async (
       return { success: false, error: true, message: "Lesson not found." };
     }
 
-    // 2. Perform Teacher Conflict Check (using original teacherId and NEW times/day)
-    const teacherConflict = await prisma.lesson.findFirst({
-      where: {
-        schoolId: schoolId,
-        teacherId: originalLesson.teacherId,
-        day: day,
-        id: { not: id },
-        startTime: { lt: endTime },
-        endTime: { gt: startTime },
-      },
-      select: { id: true },
+    // 2. Teacher conflict (same teacher, any school) — compare absolute time via each school timezone
+    const teacherConflict = await findFirstOverlappingLessonForTeacher(prisma, {
+      schoolId,
+      teacherId: originalLesson.teacherId,
+      day: day as Day,
+      lessonStartTime: startTime,
+      lessonEndTime: endTime,
+      excludeLessonId: id,
     });
 
     if (teacherConflict) {
@@ -1691,16 +2180,18 @@ export const updateLessonTime = async (
       };
     }
 
-    // 4. Update the lesson if no conflicts
+    // 4. Update the lesson if no conflicts (clear bell period — times no longer guaranteed to match Period)
     await prisma.lesson.update({
       where: {
         id: id,
-        schoolId: schoolId, // Ensure update targets the correct school
+        schoolId: schoolId,
       },
       data: {
         startTime: startTime,
         endTime: endTime,
         day: day,
+        periodId: null,
+        endPeriodId: null,
       },
     });
 
@@ -1715,6 +2206,9 @@ export const updateLessonTime = async (
 
   } catch (err) {
     console.error("Error updating lesson time:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
     return {
       success: false,
       error: true,
@@ -1730,17 +2224,45 @@ export const createAssignment = async (
 ): Promise<ActionState> => {
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "gridInitialization");
 
     // Validate Lesson belongs to the school
-    const lesson = await prisma.lesson.findUnique({ where: { id: data.lessonId, schoolId: schoolId }, select: { id: true } });
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: data.lessonId, schoolId: schoolId },
+      select: { id: true, classId: true, class: { select: { academicYearId: true } } },
+    });
     if (!lesson) return { success: false, error: true, message: "Selected lesson not found in this school." };
+
+    const dueLesson = await prisma.lesson.findUnique({
+      where: { id: data.dueLessonId, schoolId: schoolId },
+      select: { id: true, classId: true },
+    });
+    if (!dueLesson) {
+      return { success: false, error: true, message: "Selected due lesson not found in this school." };
+    }
+
+    if (lesson.classId !== dueLesson.classId) {
+      return {
+        success: false,
+        error: true,
+        message: "Source lesson and due lesson must belong to the same class.",
+      };
+    }
+
+    const computedDue = await computeDueDateForAssignment({
+      schoolId,
+      dueLessonId: data.dueLessonId,
+      startDate: data.startDate,
+    });
+    const dueDate = data.dueDate ?? computedDue;
 
     await prisma.assignment.create({
       data: {
         title: data.title,
         startDate: data.startDate,
-        dueDate: data.dueDate,
+        dueDate,
         lessonId: data.lessonId,
+        dueLessonId: data.dueLessonId,
         schoolId: schoolId,
         maxScore: data.maxScore ?? 100,
         weight: data.weight ?? 1.0,
@@ -1751,6 +2273,9 @@ export const createAssignment = async (
     return { success: true, error: false, message: "Assignment created." };
   } catch (err) {
     console.error("Error creating assignment:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to create assignment." };
   }
 };
@@ -1764,14 +2289,41 @@ export const updateAssignment = async (
   }
   try {
     const schoolId = await getCurrentUserSchoolId();
+    await assertSetupStepReadyOrThrow(schoolId, "gridInitialization");
 
     // Validate Lesson belongs to the school
-    const lesson = await prisma.lesson.findUnique({ where: { id: data.lessonId, schoolId: schoolId }, select: { id: true } });
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: data.lessonId, schoolId: schoolId },
+      select: { id: true, classId: true, class: { select: { academicYearId: true } } },
+    });
     if (!lesson) return { success: false, error: true, message: "Selected lesson not found in this school." };
+
+    const dueLesson = await prisma.lesson.findUnique({
+      where: { id: data.dueLessonId, schoolId: schoolId },
+      select: { id: true, classId: true },
+    });
+    if (!dueLesson) {
+      return { success: false, error: true, message: "Selected due lesson not found in this school." };
+    }
+
+    if (lesson.classId !== dueLesson.classId) {
+      return {
+        success: false,
+        error: true,
+        message: "Source lesson and due lesson must belong to the same class.",
+      };
+    }
 
     // Verify Assignment belongs to the school before update
     const assignmentExists = await prisma.assignment.findUnique({ where: { id: data.id, schoolId: schoolId }, select: { id: true } });
     if (!assignmentExists) return { success: false, error: true, message: "Assignment not found in this school." };
+
+    const computedDue = await computeDueDateForAssignment({
+      schoolId,
+      dueLessonId: data.dueLessonId,
+      startDate: data.startDate,
+    });
+    const dueDate = data.dueDate ?? computedDue;
 
     await prisma.assignment.update({
       where: {
@@ -1781,8 +2333,9 @@ export const updateAssignment = async (
       data: {
         title: data.title,
         startDate: data.startDate,
-        dueDate: data.dueDate,
+        dueDate,
         lessonId: data.lessonId,
+        dueLessonId: data.dueLessonId,
         maxScore: data.maxScore ?? 100,
         weight: data.weight ?? 1.0,
       },
@@ -1792,6 +2345,9 @@ export const updateAssignment = async (
     return { success: true, error: false, message: "Assignment updated." };
   } catch (err) {
     console.error("Error updating assignment:", err);
+    if (err instanceof TemporalRuleError) {
+      return { success: false, error: true, message: err.message };
+    }
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to update assignment." };
   }
 };
@@ -1832,6 +2388,28 @@ export const deleteAssignment = async (
     return { success: false, error: true, message: err instanceof Error ? err.message : "Failed to delete assignment." };
   }
 };
+
+/** E6: client preview for assignment form — computed due instant from due lesson + active term. */
+export async function previewAssignmentDueDateAction(
+  schoolId: string,
+  dueLessonId: number,
+  startDateIso: string
+): Promise<{ ok: true; iso: string } | { ok: false; message: string }> {
+  try {
+    const authUser = await getVerifiedAuthUser();
+    if (!authUser || !(await userHasSchoolAccess(authUser, schoolId))) {
+      return { ok: false, message: "Unauthorized." };
+    }
+    const iso = await computeDueDateForAssignment({
+      schoolId,
+      dueLessonId,
+      startDate: new Date(startDateIso),
+    });
+    return { ok: true, iso: iso.toISOString() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed to compute due date." };
+  }
+}
 
 // Parent actions
 export const createParent = async (
@@ -2398,7 +2976,10 @@ export const createAttendance = async (
     const schoolId = await getCurrentUserSchoolId();
 
     // Validate Lesson belongs to the school
-    const lesson = await prisma.lesson.findUnique({ where: { id: data.lessonId, schoolId: schoolId }, select: { id: true } });
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: data.lessonId, schoolId: schoolId },
+      select: { id: true, class: { select: { academicYearId: true } } },
+    });
     if (!lesson) return { success: false, error: true, message: "Selected lesson not found in this school." };
 
     // Create an attendance record for each student, ensuring student belongs to the school
@@ -2421,6 +3002,7 @@ export const createAttendance = async (
                 studentId: studentAttendance.studentId,
                 lessonId: data.lessonId,
                 schoolId: schoolId,
+                academicYearId: lesson.class.academicYearId,
                 },
             });
         }
@@ -2447,7 +3029,10 @@ export const updateAttendance = async (
     const schoolId = await getCurrentUserSchoolId();
 
     // Validate Lesson belongs to the school
-    const lesson = await prisma.lesson.findUnique({ where: { id: data.lessonId, schoolId: schoolId }, select: { id: true } });
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: data.lessonId, schoolId: schoolId },
+      select: { id: true, class: { select: { academicYearId: true } } },
+    });
     if (!lesson) return { success: false, error: true, message: "Selected lesson not found in this school." };
 
      // Use a transaction for atomicity
@@ -2480,6 +3065,7 @@ export const updateAttendance = async (
                 studentId: studentAttendance.studentId,
                 lessonId: data.lessonId,
                 schoolId: schoolId,
+                academicYearId: lesson.class.academicYearId,
                 },
             });
         }
@@ -2751,7 +3337,7 @@ export const createSchoolAndAssignAdmin = async (
         });
         newSchoolId = newSchool.id;
 
-        await tx.auth.update({
+        const updatedAuth = await tx.auth.update({
           where: { id: userId },
           data: { schoolId: newSchoolId, role: 'admin', accountType: 'SCHOOL_ADMIN' },
         });
@@ -2764,7 +3350,7 @@ export const createSchoolAndAssignAdmin = async (
           },
         });
 
-        await tx.schoolMembership.create({
+        const membership = await tx.schoolMembership.create({
           data: {
             authId: userId,
             schoolId: newSchoolId,
@@ -2772,6 +3358,17 @@ export const createSchoolAndAssignAdmin = async (
             adminId: adminRecord.id,
           },
         });
+
+        const tokenPayload: AuthUser = {
+          id: updatedAuth.id,
+          username: updatedAuth.username,
+          email: updatedAuth.email || undefined,
+          role: 'admin',
+          schoolId: newSchoolId,
+          accountType: updatedAuth.accountType,
+          membershipId: membership.id,
+        };
+        newAuthToken = await generateToken(tokenPayload);
       });
 
     } else if (email && password) { // Scenario 2: New user creating account and school
@@ -2896,8 +3493,8 @@ export async function getVerifiedAuthUser(): Promise<AuthUser | null> {
 // Refactored isAdminCheck (can be used by other actions)
 async function isAdminOfSchool(schoolIdToCheck: string): Promise<boolean> {
   const authUser = await getVerifiedAuthUser();
-  if (!authUser) return false;
-  return authUser.role === 'admin' && authUser.schoolId === schoolIdToCheck;
+  if (!authUser || authUser.role !== 'admin') return false;
+  return userHasSchoolAccess(authUser, schoolIdToCheck);
 }
 
 // Example usage in a hypothetical createGrade action
@@ -3515,7 +4112,7 @@ export const bulkCreateResults = async (
         if (!authUser) {
             return { successCount: 0, errorCount: 0, errors: [{ index: -1, identifier: "System", message: "Unauthorized: User not authenticated." }] };
     }
-        if (authUser.schoolId !== actualSchoolId) {
+        if (!(await userHasSchoolAccess(authUser, actualSchoolId))) {
             return { successCount: 0, errorCount: 0, errors: [{ index: -1, identifier: "System", message: "Unauthorized: User does not belong to this school." }] };
         }
         if (authUser.role !== 'admin' && authUser.role !== 'teacher') {
@@ -3663,18 +4260,21 @@ export const updateAdmin = async (
       return { success: false, error: true, message: "User not authenticated." };
     }
 
-    // Fetch the admin profile and ensure it matches the authenticated user's authId
     const adminProfile = await prisma.admin.findUnique({
-      where: { id: id, schoolId: authUser.schoolId! }, // Admin.id is CUID string
-      select: { authId: true }
+      where: { id },
+      select: { authId: true, schoolId: true }
     });
 
     if (!adminProfile) {
-      return { success: false, error: true, message: "Admin profile not found in this school." };
+      return { success: false, error: true, message: "Admin profile not found." };
     }
 
     if (adminProfile.authId !== authUser.id) {
       return { success: false, error: true, message: "Forbidden: You can only update your own admin profile." };
+    }
+
+    if (!(await userHasSchoolAccess(authUser, adminProfile.schoolId))) {
+      return { success: false, error: true, message: "Forbidden: No active membership for this school." };
     }
     
     const currentAuthRecord = await prisma.auth.findUnique({ where: { id: authUser.id } });
@@ -3729,19 +4329,17 @@ export const updateAdmin = async (
         await tx.admin.update({
           where: {
             id: id,
-            schoolId: authUser.schoolId!, // Ensure school context
+            schoolId: adminProfile.schoolId,
           },
           data: adminProfileUpdates, // Use the prepared updates object
         });
       }
     });
 
-    // Revalidate the profile page path
-    // Ensure schoolId and authId are correctly interpolated
-    if (authUser.schoolId && authUser.id) {
-         revalidatePath(`/schools/${authUser.schoolId}/profile/${authUser.id}`);
+    if (authUser.id) {
+         revalidatePath(`/schools/${adminProfile.schoolId}/profile/${authUser.id}`);
     }
-    revalidatePath(`/schools/${authUser.schoolId}/list/admins`); // If there's an admin list page
+    revalidatePath(`/schools/${adminProfile.schoolId}/list/admins`);
 
 
     return { success: true, error: false, message: "Admin profile updated successfully." };
@@ -3867,9 +4465,14 @@ export const createTeacherAvailability = async (
         return { success: false, error: true, message: "Only teachers can create their own availability currently." };
     }
     
-    const schoolId = authUser.schoolId;
-    if (!schoolId) {
-         return { success: false, error: true, message: "User not associated with a school." };
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
+      return { success: false, error: true, message: "User not associated with a school." };
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
     }
 
     const startTimeDate = convertToDateTime(data.dayOfWeek, data.startTime);
@@ -3922,21 +4525,16 @@ export const createTeacherAvailability = async (
 };
 
 export const getTeacherAvailability = async (teacherId: string, schoolIdFromParam: string) => {
-  // schoolIdFromParam is the school context from URL, authUser.schoolId is from logged-in user
   try {
     const authUser = await getVerifiedAuthUser();
     if (!authUser) {
-      // Handle as per app's convention: throw error or return specific response
       console.error("getTeacherAvailability: User not authenticated.");
-      return []; // Or throw new Error("User not authenticated.");
+      return [];
     }
 
-    // Authorization: 
-    // 1. Teacher can get their own availability.
-    // 2. Admin of THE SAME school can get any teacher's availability from that school.
-    if (authUser.schoolId !== schoolIdFromParam) {
-        console.error("getTeacherAvailability: User school does not match parameter school.");
-        return []; // Or throw new Error("User not authorized for this school.");
+    if (!(await userHasSchoolAccess(authUser, schoolIdFromParam))) {
+        console.error("getTeacherAvailability: User not authorized for this school.");
+        return [];
     }
 
     // if (authUser.role === 'teacher' && authUser.id !== teacherId) { // OLD check comparing Auth.id to Teacher.id
@@ -3984,8 +4582,8 @@ export const getTeacherAvailabilityForDay = async (teacherId: string, dayOfWeek:
       return [];
     }
 
-    if (authUser.schoolId !== schoolIdFromParam) {
-      console.error("getTeacherAvailabilityForDay: User school does not match parameter school.");
+    if (!(await userHasSchoolAccess(authUser, schoolIdFromParam))) {
+      console.error("getTeacherAvailabilityForDay: User not authorized for this school.");
       return [];
     }
 
@@ -4022,9 +4620,14 @@ export const updateTeacherAvailability = async (
       return { success: false, error: true, message: "User not authenticated." };
     }
 
-    const schoolId = authUser.schoolId;
-    if (!schoolId) {
-         return { success: false, error: true, message: "User not associated with a school." };
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
+      return { success: false, error: true, message: "User not associated with a school." };
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
     }
     
     let teacherIdToUse = "";
@@ -4120,17 +4723,22 @@ export const deleteTeacherAvailability = async (
     if (!authUser) {
       return { success: false, error: true, message: "User not authenticated." };
     }
-    const schoolId = authUser.schoolId;
-     if (!schoolId) {
-         return { success: false, error: true, message: "User not associated with a school." };
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
+      return { success: false, error: true, message: "User not associated with a school." };
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
     }
 
     let teacherIdToUse = "";
      if (authUser.role === 'teacher') {
-         if (!authUser.id) {
+         if (!authUser.profileId) {
              return { success: false, error: true, message: "Teacher profile not found." };
         }
-        teacherIdToUse = authUser.id;
+        teacherIdToUse = authUser.profileId;
     } else {
         return { success: false, error: true, message: "Only teachers can delete their own availability currently." };
     }
@@ -4186,12 +4794,16 @@ export const createScheduleChangeRequest = async (
       console.error("[ACTION createScheduleChangeRequest] Error: Teacher profile ID not found.");
       return { success: false, error: true, message: "Teacher profile ID not found for authenticated user." };
     }
-    if (!authUser.schoolId) {
+    let schoolId: string;
+    try {
+      schoolId = await getCurrentUserSchoolId();
+    } catch {
       console.error("[ACTION createScheduleChangeRequest] Error: User not associated with a school.");
       return { success: false, error: true, message: "User not associated with a school." };
     }
-
-    const schoolId = authUser.schoolId;
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "No active membership for this school." };
+    }
     const requestingTeacherId = authUser.profileId;
 
     console.log(`[ACTION createScheduleChangeRequest] Requesting Teacher ID: ${requestingTeacherId}, School ID: ${schoolId}, Lesson ID: ${data.lessonId}`);
@@ -4302,9 +4914,15 @@ export const getTeacherLessons = async (teacherIdToFetch?: string, schoolIdFromP
       return []; 
     }
 
-    const schoolId = schoolIdFromParam || authUser.schoolId;
-    if (!schoolId) {
+    let schoolId: string;
+    try {
+      schoolId = schoolIdFromParam ?? (await getCurrentUserSchoolId());
+    } catch {
       console.error("getTeacherLessons: School ID not available.");
+      return [];
+    }
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      console.error("getTeacherLessons: User not authorized for this school.");
       return [];
     }
 
@@ -4328,11 +4946,6 @@ export const getTeacherLessons = async (teacherIdToFetch?: string, schoolIdFromP
         // Admin must specify which teacher's lessons to fetch.
         // Or, we could decide admins fetch ALL lessons if no teacherIdToFetch, but that's a different use case.
         console.warn("getTeacherLessons: Admin did not specify a teacher ID. Returning no lessons.");
-        return [];
-      }
-      // Ensure admin is accessing within their own school
-      if (authUser.schoolId !== schoolId) {
-        console.error("getTeacherLessons: Admin school mismatch.");
         return [];
       }
     } else {
@@ -4389,14 +5002,15 @@ export const getScheduleChangeRequestsForTeacher = async (schoolIdFromParam?: st
       return [];
     }
 
-    const schoolId = schoolIdFromParam || authUser.schoolId;
-    if (!schoolId) {
+    let schoolId: string;
+    try {
+      schoolId = schoolIdFromParam ?? (await getCurrentUserSchoolId());
+    } catch {
       console.error("getScheduleChangeRequestsForTeacher: School ID not available.");
       return [];
     }
-    // Ensure the teacher is querying for requests within their own school context
-    if (authUser.schoolId !== schoolId) {
-        console.error("getScheduleChangeRequestsForTeacher: School ID mismatch.");
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+        console.error("getScheduleChangeRequestsForTeacher: User not authorized for this school.");
         return [];
     }
 
@@ -4449,17 +5063,18 @@ export const cancelScheduleChangeRequest = async (currentState: ActionState, req
     if (!authUser.profileId) {
       return { success: false, error: true, message: "Teacher profile ID not found." };
     }
-    if (!authUser.schoolId) {
-        return { success: false, error: true, message: "User not associated with a school." };
-    }
 
     const request = await prisma.scheduleChangeRequest.findUnique({
-      where: { id: requestId, schoolId: authUser.schoolId }, // Ensure request is within the teacher's school
-      select: { id: true, requestingTeacherId: true, status: true }
+      where: { id: requestId },
+      select: { id: true, requestingTeacherId: true, status: true, schoolId: true }
     });
 
     if (!request) {
       return { success: false, error: true, message: "Request not found." };
+    }
+
+    if (!(await userHasSchoolAccess(authUser, request.schoolId))) {
+      return { success: false, error: true, message: "Unauthorized for this school." };
     }
 
     if (request.requestingTeacherId !== authUser.profileId) {
@@ -4471,15 +5086,14 @@ export const cancelScheduleChangeRequest = async (currentState: ActionState, req
     }
 
     await prisma.scheduleChangeRequest.update({
-      where: { id: requestId }, // ID is unique, schoolId/teacherId checks done above
+      where: { id: requestId },
       data: {
         status: PrismaRequestStatus.CANCELED,
       }
     });
 
-    // Revalidate paths where requests are shown
-    revalidatePath(`/schools/${authUser.schoolId}/teacher/my-requests`);
-    revalidatePath(`/schools/${authUser.schoolId}/admin/schedule-requests`); // Admin view might also need revalidation
+    revalidatePath(`/schools/${request.schoolId}/teacher/my-requests`);
+    revalidatePath(`/schools/${request.schoolId}/admin/schedule-requests`);
 
     return { success: true, error: false, message: "Schedule change request canceled successfully." };
 
@@ -4503,16 +5117,17 @@ export const getScheduleChangeRequestsForAdmin = async (schoolIdFromParam?: stri
       return []; // Or throw an error appropriate for your error handling
     }
 
-    const schoolId = schoolIdFromParam || authUser.schoolId;
-    if (!schoolId) {
+    let schoolId: string;
+    try {
+      schoolId = schoolIdFromParam ?? (await getCurrentUserSchoolId());
+    } catch {
       console.error("[ACTION getScheduleChangeRequestsForAdmin] Error: School ID not available.");
       return [];
     }
 
-    // Authorization: Ensure the user is an admin of this school
-    if (authUser.role !== 'admin' || authUser.schoolId !== schoolId) {
+    if (authUser.role !== 'admin' || !(await userHasSchoolAccess(authUser, schoolId))) {
       console.error(`[ACTION getScheduleChangeRequestsForAdmin] Error: User ${authUser.id} (role: ${authUser.role}) is not authorized for school ${schoolId}.`);
-      return []; // Or throw an authorization error
+      return [];
     }
     console.log(`[ACTION getScheduleChangeRequestsForAdmin] User ${authUser.id} is an admin for school ${schoolId}. Fetching PENDING requests.`);
 
@@ -4569,26 +5184,26 @@ export const rejectScheduleChangeRequest = async (
       console.error("[ACTION rejectScheduleChangeRequest] Error: User not authenticated.");
       return { success: false, error: true, message: "User not authenticated." };
     }
-    if (!authUser.schoolId) {
-      console.error("[ACTION rejectScheduleChangeRequest] Error: Authenticated user not associated with a school.");
-      return { success: false, error: true, message: "User not associated with a school." };
-    }
     if (authUser.role !== 'admin') {
       console.error("[ACTION rejectScheduleChangeRequest] Error: User is not an admin.");
       return { success: false, error: true, message: "Only admins can reject requests." };
     }
 
-    const schoolId = authUser.schoolId;
-
     const requestToUpdate = await prisma.scheduleChangeRequest.findUnique({
-      where: { id: requestId, schoolId: schoolId },
-      select: { id: true, status: true }
+      where: { id: requestId },
+      select: { id: true, status: true, schoolId: true }
     });
 
     if (!requestToUpdate) {
-      console.error(`[ACTION rejectScheduleChangeRequest] Error: Request with ID ${requestId} not found in school ${schoolId}.`);
+      console.error(`[ACTION rejectScheduleChangeRequest] Error: Request with ID ${requestId} not found.`);
       return { success: false, error: true, message: "Schedule change request not found." };
     }
+
+    if (!(await userHasSchoolAccess(authUser, requestToUpdate.schoolId))) {
+      return { success: false, error: true, message: "Not authorized for this school." };
+    }
+
+    const schoolId = requestToUpdate.schoolId;
 
     if (requestToUpdate.status !== PrismaRequestStatus.PENDING) {
       console.warn(`[ACTION rejectScheduleChangeRequest] Warning: Request ${requestId} is not in PENDING state (current: ${requestToUpdate.status}).`);
@@ -4629,22 +5244,26 @@ export const approveScheduleChangeRequest = async (
   console.log(`[ACTION approveScheduleChangeRequest] Initiated for request ID: ${requestId}`);
   try {
     const authUser = await getVerifiedAuthUser();
-    if (!authUser || !authUser.schoolId || authUser.role !== 'admin') {
+    if (!authUser || authUser.role !== 'admin') {
       console.error("[ACTION approveScheduleChangeRequest] Error: User not authenticated as admin or not associated with a school.");
       return { success: false, error: true, message: "User must be an authenticated admin of a school." };
     }
-    const schoolId = authUser.schoolId;
 
     const request = await prisma.scheduleChangeRequest.findUnique({
-      where: { id: requestId, schoolId: schoolId },
+      where: { id: requestId },
       include: {
         lesson: { include: { class: true } }, // Include class for conflict checks
       }
     });
 
     if (!request) {
-      console.error(`[ACTION approveScheduleChangeRequest] Error: Request ${requestId} not found in school ${schoolId}.`);
+      console.error(`[ACTION approveScheduleChangeRequest] Error: Request ${requestId} not found.`);
       return { success: false, error: true, message: "Schedule change request not found." };
+    }
+
+    const schoolId = request.schoolId;
+    if (!(await userHasSchoolAccess(authUser, schoolId))) {
+      return { success: false, error: true, message: "Not authorized for this school." };
     }
 
     if (request.status !== PrismaRequestStatus.PENDING) {
@@ -4835,7 +5454,7 @@ export const createRoom = async (
     
     const { name, type, capacity, description, schoolId: formSchoolId } = validatedFields.data;
 
-    if (authUser.role !== 'system_admin' && authUser.schoolId !== formSchoolId) {
+    if (authUser.role !== 'system_admin' && !(await userHasSchoolAccess(authUser, formSchoolId))) {
         return { success: false, error: true, message: "Forbidden: School ID mismatch." };
     }
     if (authUser.role !== 'system_admin' && authUser.role !== 'admin') {
@@ -4894,7 +5513,7 @@ export const updateRoom = async (
       return { success: false, error: true, message: "School ID is required for update." };
     }
 
-    if (authUser.role !== 'system_admin' && authUser.schoolId !== formSchoolId) {
+    if (authUser.role !== 'system_admin' && !(await userHasSchoolAccess(authUser, formSchoolId))) {
         return { success: false, error: true, message: "Forbidden: School ID mismatch for update." };
     }
     if (authUser.role !== 'system_admin' && authUser.role !== 'admin') {
@@ -4959,7 +5578,7 @@ export const deleteRoom = async (
     }
 
     // Authorization
-    if (authUser.role !== 'system_admin' && authUser.schoolId !== roomToDelete.schoolId) {
+    if (authUser.role !== 'system_admin' && !(await userHasSchoolAccess(authUser, roomToDelete.schoolId))) {
         return { success: false, error: true, message: "Forbidden: You do not have permission to delete this room for the specified school." };
     }
     if (authUser.role !== 'system_admin' && authUser.role !== 'admin') {

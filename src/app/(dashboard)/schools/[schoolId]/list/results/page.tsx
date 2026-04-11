@@ -7,6 +7,7 @@ import { ITEM_PER_PAGE } from "@/lib/settings";
 import { Prisma } from "@prisma/client";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 type ResultList = {
   id: number;
@@ -36,7 +37,7 @@ const ResultListPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -230,8 +231,9 @@ const renderRow = (item: ResultList | null) => {
 
   const data = dataRes.map((item) => {
     const assessment = item.exam || item.assignment;
+    const assessmentLesson = assessment?.lesson;
 
-    if (!assessment || !item.student) return null;
+    if (!assessment || !item.student || !assessmentLesson) return null;
 
     const isExam = !!item.exam;
 
@@ -240,11 +242,11 @@ const renderRow = (item: ResultList | null) => {
       title: assessment.title,
       studentName: item.student.name,
       studentSurname: item.student.surname,
-      teacherName: assessment.lesson.teacher.name,
-      teacherSurname: assessment.lesson.teacher.surname,
+      teacherName: assessmentLesson.teacher.name,
+      teacherSurname: assessmentLesson.teacher.surname,
       score: item.score,
       maxScore: (assessment as any).maxScore ?? 100,
-      className: assessment.lesson.class.name,
+      className: assessmentLesson.class.name,
       startTime: isExam && item.exam?.startTime ? item.exam.startTime : (item.assignment?.startDate || new Date()),
       relatedData: {}
     } as ResultList;

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import type { SchoolSubscription, SubscriptionPlan, School } from '@prisma/client';
 import { SubscriptionStatus } from '@prisma/client';
 import type { AuthUser } from '@/lib/auth';
@@ -24,20 +24,28 @@ interface PaginatedResponse {
 
 const SchoolSubscriptionsPage = () => {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [subscriptions, setSubscriptions] = useState<EnrichedSchoolSubscription[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  const [currentPage, setCurrentPage] = useState(Number(searchParams.get('page')) || 1);
+  const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [limit, setLimit] = useState(Number(searchParams.get('limit')) || 10);
+  const [limit, setLimit] = useState(10);
 
   // Filters
-  const [filterSchoolId, setFilterSchoolId] = useState(searchParams.get('schoolId') || '');
-  const [filterPlanId, setFilterPlanId] = useState(searchParams.get('planId') || '');
-  const [filterStatus, setFilterStatus] = useState(searchParams.get('status') || '');
+  const [filterSchoolId, setFilterSchoolId] = useState('');
+  const [filterPlanId, setFilterPlanId] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setCurrentPage(Number(params.get('page')) || 1);
+    setLimit(Number(params.get('limit')) || 10);
+    setFilterSchoolId(params.get('schoolId') || '');
+    setFilterPlanId(params.get('planId') || '');
+    setFilterStatus(params.get('status') || '');
+  }, []);
 
   const fetchSchoolSubscriptions = useCallback(async (page: number, currentLimit: number, schoolId?: string, planId?: string, status?: string) => {
     setIsLoading(true);

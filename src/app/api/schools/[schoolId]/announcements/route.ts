@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { verifyToken } from '@/lib/auth';
-import type { AuthUser } from '@/lib/auth';
+import { requireSchoolAccess } from '@/lib/auth';
 
 export async function GET(
   request: NextRequest,
@@ -13,28 +12,12 @@ export async function GET(
     return NextResponse.json({ error: 'School ID is required' }, { status: 400 });
   }
 
-  // Authenticate user
-  const token = request.cookies.get('auth_token')?.value || request.headers.get('authorization')?.split(' ')[1];
-  if (!token) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const authUser = await verifyToken(token);
-  if (!authUser) {
-    return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-  }
-
-  // Ensure user is accessing their own school or is an admin (additional checks can be added)
-  if (authUser.schoolId !== schoolId && authUser.role !== 'admin') {
-     // Non-admin users can only access their own school's announcements
-     // Admins might have broader access, but for now, let's assume they also operate within a school context from the URL
-     // Or, if your system allows admins to see all schools, this logic needs adjustment
-    return NextResponse.json({ error: 'Forbidden: Access to this school\'s announcements is restricted.' }, { status: 403 });
-  }
-
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+  const authUser = accessOrResponse;
 
   try {
-    const userId = authUser.id;
+    const profileId = authUser.profileId ?? authUser.id;
     const role = authUser.role;
 
     let whereClause: any = {
@@ -50,7 +33,7 @@ export async function GET(
             { classId: null },
             {
               class: {
-                lessons: { some: { teacherId: userId, schoolId: schoolId } },
+                lessons: { some: { teacherId: profileId, schoolId: schoolId } },
               },
             },
           ],
@@ -61,7 +44,7 @@ export async function GET(
             { classId: null },
             {
               class: {
-                students: { some: { id: userId, schoolId: schoolId } },
+                students: { some: { id: profileId, schoolId: schoolId } },
               },
             },
           ],
@@ -72,7 +55,7 @@ export async function GET(
             { classId: null },
             {
               class: {
-                students: { some: { parentId: userId, schoolId: schoolId } },
+                students: { some: { parentId: profileId, schoolId: schoolId } },
               },
             },
           ],
@@ -91,7 +74,7 @@ export async function GET(
 
     const announcements = await prisma.announcement.findMany({
       take: 10, // Or a reasonable limit, can be a query param
-      orderBy: { date: 'desc' },
+      orderBy: { createdAt: 'desc' },
       where: whereClause,
       include: { // Optional: include related data if needed by the frontend
         class: {

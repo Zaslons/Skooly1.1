@@ -7,6 +7,7 @@ import { ITEM_PER_PAGE } from "@/lib/settings";
 import { Class, Prisma, Teacher, Grade, AcademicYear } from "@prisma/client";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 type ClassList = Class & {
     supervisor: Teacher | null;
@@ -28,7 +29,7 @@ const ClassListPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 

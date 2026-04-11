@@ -1,13 +1,15 @@
 import prisma from '@/lib/prisma';
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 import { redirect } from 'next/navigation';
-import CurriculumClient from './CurriculumClient'; // To be created
-import { AcademicYear, Curriculum, Grade, Subject } from '@prisma/client'; // Import Prisma types
+import Link from 'next/link';
+import CurriculumClient from './CurriculumClient';
+import { AcademicYear, Curriculum, CurriculumBook, Grade, Subject } from '@prisma/client';
 
-// Type for Curriculum entries with included Grade and Subject
 export type CurriculumWithRelations = Curriculum & {
   grade: Pick<Grade, 'id' | 'level'>;
   subject: Pick<Subject, 'id' | 'name'>;
+  books: CurriculumBook[];
 };
 
 interface CurriculumPageProps {
@@ -26,8 +28,8 @@ export default async function CurriculumPage({ params, searchParams }: Curriculu
   if (!currentUser) {
     redirect(`/sign-in?callbackUrl=/schools/${schoolId}/academic-years/${academicYearId}/curriculum`);
   }
-  if (currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
-    redirect('/(dashboard)'); // Or an unauthorized page
+  if (currentUser.role !== 'admin' || !(await assertSchoolAccessForServerUser(currentUser, schoolId))) {
+    redirect('/(dashboard)');
   }
 
   // Fetch Academic Year details
@@ -57,6 +59,7 @@ export default async function CurriculumPage({ params, searchParams }: Curriculu
     include: {
       grade: { select: { id: true, level: true } },
       subject: { select: { id: true, name: true } },
+      books: { orderBy: { sortOrder: 'asc' } },
     },
     orderBy: [
       { grade: { level: 'asc' } },
@@ -75,10 +78,25 @@ export default async function CurriculumPage({ params, searchParams }: Curriculu
     orderBy: { name: 'asc' },
   });
 
+  const academicYearsForSchool = await prisma.academicYear.findMany({
+    where: { schoolId },
+    orderBy: { startDate: 'desc' },
+    select: { id: true, name: true, startDate: true, endDate: true, isArchived: true },
+  });
+
   return (
     <div className="p-4 md:p-6">
       <h1 className="text-2xl font-semibold mb-1">Curriculum Management</h1>
-      <h2 className="text-lg text-gray-700 mb-4">For Academic Year: {academicYear.name} ({new Date(academicYear.startDate).toLocaleDateString()} - {new Date(academicYear.endDate).toLocaleDateString()})</h2>
+      <h2 className="text-lg text-gray-700 mb-2">For Academic Year: {academicYear.name} ({new Date(academicYear.startDate).toLocaleDateString()} - {new Date(academicYear.endDate).toLocaleDateString()})</h2>
+      <p className="mb-4 text-sm">
+        <Link
+          href={`/schools/${schoolId}/admin/setup/catalog-install?academicYearId=${academicYearId}`}
+          className="text-indigo-700 underline"
+        >
+          Install from catalog
+        </Link>{' '}
+        <span className="text-gray-500">— seed subjects and rows from a static template (admin).</span>
+      </p>
       <CurriculumClient
         schoolId={schoolId}
         academicYearId={academicYearId}
@@ -86,6 +104,7 @@ export default async function CurriculumPage({ params, searchParams }: Curriculu
         initialCurriculumEntries={JSON.parse(JSON.stringify(curriculumEntries))}
         gradesForSchool={JSON.parse(JSON.stringify(gradesForSchool))}
         subjectsForSchool={JSON.parse(JSON.stringify(subjectsForSchool))}
+        initialAcademicYears={JSON.parse(JSON.stringify(academicYearsForSchool))}
       />
     </div>
   );

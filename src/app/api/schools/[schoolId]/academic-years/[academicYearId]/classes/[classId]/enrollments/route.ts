@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 import { z } from 'zod';
-import { requireAuth, requireRole, AuthUser, UserRole } from '@/lib/auth';
+import { requireRole, requireSchoolAccess, AuthUser } from '@/lib/auth';
 
 // Zod schema for enrolling a student
 const studentEnrollmentSchema = z.object({
@@ -23,14 +23,11 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid Class ID format' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
-  // Teachers might also need this, could be expanded later or use requireSchoolAccess if appropriate
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin', 'teacher']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: User can only view enrollments for their own school.' }, { status: 403 });
-  }
 
   try {
     // Verify the class exists and belongs to the specified school and academic year
@@ -46,7 +43,6 @@ export async function GET(
       where: {
         classId: classId,
         academicYearId: academicYearId, // Redundant check given classToView, but good for explicitnes
-        schoolId: schoolId, // Also redundant, but explicit
         departureDate: null, // Only active enrollments
       },
       include: {
@@ -87,13 +83,11 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid Class ID format' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only manage enrollments for their own school.' }, { status: 403 });
-  }
 
   try {
     const body = await request.json();
@@ -140,7 +134,6 @@ export async function POST(
           studentId: studentId,
           classId: classId,
           academicYearId: targetClass.academicYearId, // Ensure this matches the class's AY
-          schoolId: schoolId, // Denormalized from student/class for consistency
           enrollmentDate: enrollmentDate || new Date(), // Default to now if not provided
           // departureDate is null by default, meaning active enrollment
         },

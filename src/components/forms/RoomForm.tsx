@@ -34,7 +34,7 @@ const RoomForm = ({ type, data, onClose, authUser }: RoomFormProps) => {
     defaultValues: {
       ...data,
       schoolId: data?.schoolId || schoolId, // Ensure schoolId is part of form data
-      capacity: data?.capacity || null, // Ensure null if not provided, to match schema
+      capacity: data?.capacity ?? null, // Ensure null if not provided, to match schema
       type: data?.type || null,
       description: data?.description || null,
     },
@@ -66,12 +66,6 @@ const RoomForm = ({ type, data, onClose, authUser }: RoomFormProps) => {
   // Here, it's part of defaultValues and schema, so it will be submitted.
 
   const onSubmit = handleSubmit((formData) => {
-    // Ensure capacity is number or undefined, not empty string
-    if (formData.capacity === null || formData.capacity === undefined || formData.capacity === '') {
-        formData.capacity = undefined;
-    } else {
-        formData.capacity = Number(formData.capacity);
-    }
     formAction(formData);
   });
 
@@ -94,7 +88,6 @@ const RoomForm = ({ type, data, onClose, authUser }: RoomFormProps) => {
         name="name"
         register={register}
         error={errors.name}
-        placeholder="e.g., Science Lab 1, Room 101"
         defaultValue={data?.name || ""}
       />
 
@@ -103,7 +96,6 @@ const RoomForm = ({ type, data, onClose, authUser }: RoomFormProps) => {
         name="type"
         register={register}
         error={errors.type}
-        placeholder="e.g., Lab, Classroom, Auditorium"
         defaultValue={data?.type || ""}
       />
 
@@ -113,8 +105,7 @@ const RoomForm = ({ type, data, onClose, authUser }: RoomFormProps) => {
         type="number"
         register={register}
         error={errors.capacity}
-        placeholder="e.g., 30"
-        defaultValue={data?.capacity || undefined}
+        defaultValue={data?.capacity !== null && data?.capacity !== undefined ? String(data.capacity) : undefined}
       />
 
       <div className="flex flex-col gap-1">

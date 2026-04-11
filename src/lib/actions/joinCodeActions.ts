@@ -3,6 +3,7 @@
 import prisma from '@/lib/prisma';
 import { revalidatePath } from 'next/cache';
 import { getServerUser } from '@/lib/auth';
+import { userHasSchoolAccess } from '@/lib/schoolAccess';
 import crypto from 'crypto';
 
 function generateCode(length = 8): string {
@@ -53,7 +54,7 @@ export async function createJoinCodeAction(data: {
 
 export async function deactivateJoinCodeAction(joinCodeId: string, schoolId: string) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 
@@ -72,7 +73,7 @@ export async function deactivateJoinCodeAction(joinCodeId: string, schoolId: str
 
 export async function getSchoolJoinCodes(schoolId: string) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, schoolId))) {
     return [];
   }
 

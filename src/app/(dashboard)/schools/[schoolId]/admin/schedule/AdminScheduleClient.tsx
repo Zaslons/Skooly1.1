@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useEffect, useCallback, useTransition } from 'react';
+import { useState, useEffect, useCallback, useTransition, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 // Remove useParams, use it in Server Component
 // import { useParams } from 'next/navigation';
-import BigCalendar from '@/components/BigCalender';
+import type { ScheduleEvent } from '@/components/BigCalender';
+import PeriodGridCalendar from '@/components/scheduling/period-grid/PeriodGridCalendar';
 // Corrected imports for FullCalendar event argument types
-import { DateSelectArg, EventClickArg, EventDropArg } from '@fullcalendar/core';
+import { DateSelectArg, EventClickArg, EventDropArg, DatesSetArg } from '@fullcalendar/core';
 import { EventResizeDoneArg } from '@fullcalendar/interaction'; // Assuming this is the correct export location
 import { adjustScheduleToCurrentWeek, cn, formatDateTimeToTimeString } from '@/lib/utils';
 import { toast } from 'react-toastify';
@@ -13,45 +15,24 @@ import { updateLessonTime, createLesson, getTeacherAvailability } from '@/lib/ac
 import FormModal from '@/components/FormModal';
 import { Lesson, TeacherAvailability, Day as PrismaDay } from '@prisma/client'; // Import Lesson, TeacherAvailability, PrismaDay type
 import type { AuthUser } from '@/lib/auth'; // Import AuthUser for props
-
-// Type matching the expected event structure for BigCalendar
-type ScheduleEvent = {
-  id?: string;
-  title?: string; // Optional for background events
-  start?: Date;   // Optional for recurring background events
-  end?: Date;     // Optional for recurring background events
-  daysOfWeek?: number[];
-  startTime?: string; // For recurring events
-  endTime?: string;   // For recurring events
-  display?: 'background' | 'auto' | 'inverse-background'; // For background events, added inverse-background
-  color?: string; // For background event color
-  extendedProps: {
-    // Lesson specific
-    lessonId?: number;
-    subject?: string;
-    className?: string; // class name as in 'Math Class'
-    teacher?: string;
-    subjectId?: number;
-    classId?: number;
-    teacherId?: string; // Changed to string for CUID
-    originalDay?: PrismaDay; // Changed to PrismaDay
-
-    // Availability specific
-    type?: 'availability';
-    isAvailable?: boolean;
-    notes?: string | null;
-  };
-  editable?: boolean; 
-  eventStartEditable?: boolean; 
-  eventDurationEditable?: boolean; 
-};
+import Link from 'next/link';
+import type {
+  GenerateTermScheduleResponse,
+  GenerateTermScheduleScope,
+} from '@/lib/formValidationSchemas';
+import type { CalendarInstanceEventDTO } from '@/lib/domain/calendarInstances';
+import LessonSessionInstanceModal from '@/components/scheduling/LessonSessionInstanceModal';
 
 // Type for related data needed by LessonForm
 type LessonRelatedData = {
   subjects: any[];
-  teachers: TeacherWithSubjects[]; // Added TeacherWithSubjects type
+  teachers: TeacherWithSubjects[];
+  grades?: { id: number; level: string }[];
   classes: any[];
-  schoolId: string; // Added schoolId to relatedData
+  rooms?: { id: number; name: string }[];
+  schoolId: string;
+  periods?: { id: string; name: string; startTime: string | Date; endTime: string | Date; order: number }[];
+  periodsOnly?: boolean;
 };
 
 // Helper type for teachers in relatedData
@@ -79,16 +60,49 @@ interface AdminScheduleClientProps {
   initialLessons: any[]; // Use a more specific type based on Prisma include if possible
   initialRelatedData: LessonRelatedData;
   authUser: AuthUser | null; // Added authUser prop
+  schedulingReadiness: {
+    isReady: boolean;
+    activeAcademicYearId: string | null;
+    activeTermId: string | null;
+    blockers: string[];
+  };
+  setupStatus: {
+    canGenerate: boolean;
+    blockers: string[];
+    ids?: {
+      activeAcademicYearId: string | null;
+      activeTermId: string | null;
+    };
+    steps: Record<
+      string,
+      {
+        key: string;
+        title: string;
+        complete: boolean;
+        locked: boolean;
+        optional: boolean;
+        blockers: string[];
+        fixHref: string;
+      }
+    >;
+    checklist: { label: string; complete: boolean; blockers: string[] }[];
+  };
+  /** Human-readable e.g. `Winter 2026 (2025-2026)` — from server; avoids showing raw term id */
+  activeTermDisplay: string | null;
 }
 
-const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: AdminScheduleClientProps) => {
-  // Remove state for schoolId, get from props if needed or context
-  // const params = useParams();
-  // const schoolId = params.schoolId as string;
-  
+const AdminScheduleClient = ({
+  initialLessons,
+  initialRelatedData,
+  authUser,
+  schedulingReadiness,
+  setupStatus,
+  activeTermDisplay,
+}: AdminScheduleClientProps) => {
+  const pageSchoolId = initialRelatedData.schoolId;
+
   // Initialize state from props
-  const [events, setEvents] = useState<ScheduleEvent[]>([]);
-  const [loading, setLoading] = useState(false); // Loading is handled by server initially
+  const [loading, setLoading] = useState(false); // legacy / availability only
   const [isPending, startTransition] = useTransition();
   const [isModalOpen, setIsModalOpen] = useState(false);
   // Add state for selected class filter
@@ -106,83 +120,176 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
   // Keep relatedData in state if it needs to be accessed by handlers easily
   const [relatedDataForForm, setRelatedDataForForm] = useState<LessonRelatedData>(initialRelatedData);
 
-  // Process initial data and filter based on selected class
-  useEffect(() => {
-    console.log("useEffect [initialLessons, selectedClassId, selectedTeacherId, teacherAvailabilitySlots] running. Filter Class:", selectedClassId, "Teacher:", selectedTeacherId);
-    setLoading(true);
-    try {
-       const lessonsToFormat = selectedClassId
-         ? initialLessons.filter(lesson => lesson.classId?.toString() === selectedClassId)
-         : initialLessons;
+  // Lock parity with backend guards:
+  // lesson creation/editing is protected by `temporalInitialization` (static + temporal prerequisites).
+  const temporalStep = setupStatus.steps?.temporalInitialization;
+  const canEditLessons = Boolean(temporalStep?.complete);
+  const firstTemporalBlocker = temporalStep?.blockers?.[0] ?? schedulingReadiness.blockers?.[0];
+  const setupHref = `/schools/${pageSchoolId}/admin/setup`;
+  const activeTermId = setupStatus.ids?.activeTermId ?? null;
 
-       const formattedLessonEvents = lessonsToFormat.map((lesson: any) => ({
-         id: lesson.id.toString(),
-         title: `${lesson.subject.name} (${lesson.class.name})`,
-         start: new Date(lesson.startTime),
-         end: new Date(lesson.endTime),
-         extendedProps: {
-           lessonId: lesson.id,
-           subject: lesson.subject.name,
-           className: lesson.class.name,
-           teacher: `${lesson.teacher.name} ${lesson.teacher.surname}`,
-           subjectId: lesson.subject.id,
-           classId: lesson.class.id,
-           teacherId: lesson.teacher.id,
-           originalDay: lesson.day as PrismaDay
-         },
-         // No top-level daysOfWeek, startTime, endTime for these lesson events
-       } as ScheduleEvent)); // Added cast to ScheduleEvent
+  // E4 term generation UI state (dry-run then commit confirmation).
+  const router = useRouter();
+  const [genLoading, setGenLoading] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<GenerateTermScheduleResponse | null>(null);
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [pendingCommit, setPendingCommit] = useState(false);
+  const [generationIdempotencyKey, setGenerationIdempotencyKey] = useState<string | null>(null);
+  const [genScopeType, setGenScopeType] = useState<'school' | 'grade' | 'class'>('school');
+  const [genGradeId, setGenGradeId] = useState<string>('');
+  const [genScopeClassId, setGenScopeClassId] = useState<string>('');
+  const [genSimulateFailureAt, setGenSimulateFailureAt] = useState<string>('');
 
-       let combinedEvents: ScheduleEvent[] = formattedLessonEvents;
+  // E5: unified calendar (instances + exams + overlays)
+  const [instanceSourceEvents, setInstanceSourceEvents] = useState<ScheduleEvent[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const lastRangeRef = useRef<{ start: Date; end: Date } | null>(null);
+  const [showLayerLessons, setShowLayerLessons] = useState(true);
+  const [showLayerExams, setShowLayerExams] = useState(true);
+  const [showLayerOverlays, setShowLayerOverlays] = useState(true);
+  const [showHolidayOverlays, setShowHolidayOverlays] = useState(true);
+  const [showBreakOverlays, setShowBreakOverlays] = useState(true);
+  const [showExamPeriodOverlays, setShowExamPeriodOverlays] = useState(true);
+  const [instanceModalOpen, setInstanceModalOpen] = useState(false);
+  const [instanceModalProps, setInstanceModalProps] = useState<Record<string, unknown> | null>(null);
 
-      if (selectedTeacherId && teacherAvailabilitySlots.length > 0) {
-        const unavailableSlots = teacherAvailabilitySlots.filter(slot => !slot.isAvailable);
+  const refetchCalendar = useCallback(() => {
+    const r = lastRangeRef.current;
+    if (!r || !pageSchoolId) return;
+    const params = new URLSearchParams({
+      start: r.start.toISOString(),
+      end: r.end.toISOString(),
+    });
+    if (selectedClassId) params.set('classId', selectedClassId);
+    if (selectedTeacherId) params.set('teacherId', selectedTeacherId);
+    setCalendarLoading(true);
+    fetch(`/api/schools/${pageSchoolId}/calendar/instances?${params.toString()}`)
+      .then((res) => res.json())
+      .then((data: { events?: CalendarInstanceEventDTO[] }) => {
+        const mapped: ScheduleEvent[] = (data.events ?? []).map((ev) => ({
+          id: ev.id,
+          title: ev.title,
+          start: new Date(ev.start),
+          end: new Date(ev.end),
+          display: ev.display,
+          backgroundColor: ev.backgroundColor,
+          borderColor: ev.borderColor,
+          textColor: ev.textColor,
+          extendedProps: { ...ev.extendedProps, kind: ev.kind },
+        }));
+        setInstanceSourceEvents(mapped);
+      })
+      .catch(() => {
+        toast.error('Failed to load calendar.');
+        setInstanceSourceEvents([]);
+      })
+      .finally(() => setCalendarLoading(false));
+  }, [pageSchoolId, selectedClassId, selectedTeacherId]);
 
-        const availabilityEvents = unavailableSlots.map(slot => {
-          const dayNumbers: Record<PrismaDay, number> = {
-            MONDAY: 1, TUESDAY: 2, WEDNESDAY: 3, THURSDAY: 4, FRIDAY: 5, SATURDAY: 6, SUNDAY: 0
-          };
-          const dayNum = dayNumbers[slot.dayOfWeek];
+  const handleDatesSet = useCallback(
+    (arg: DatesSetArg) => {
+      lastRangeRef.current = { start: arg.start, end: arg.end };
+      refetchCalendar();
+    },
+    [refetchCalendar]
+  );
 
-          return {
-            id: `avail-${slot.id}`,
-            daysOfWeek: [dayNum],
-            startTime: formatDateTimeToTimeString(slot.startTime), // HH:MM
-            endTime: formatDateTimeToTimeString(slot.endTime),   // HH:MM
-            display: 'background',
-            color: 'rgba(255, 160, 122, 0.35)', // Consistent light red for unavailable
-            extendedProps: {
-                type: 'availability',
-                isAvailable: slot.isAvailable, // will be false here
-                notes: slot.notes
-            },
-            editable: false,
-            eventStartEditable: false,
-            eventDurationEditable: false,
-          } as ScheduleEvent; 
-        });
-        combinedEvents = [...formattedLessonEvents, ...availabilityEvents];
-      }
-      
-      setEvents(combinedEvents);
 
-    } catch (error) {
-        console.error("Error processing lessons and availability:", error);
-        toast.error("Failed to process schedule data.");
-        setEvents([]);
-    } finally {
-        setLoading(false);
+  const buildGenerationScope = useCallback((): GenerateTermScheduleScope | null => {
+    if (genScopeType === 'school') return { type: 'school' };
+    if (genScopeType === 'grade') {
+      const idNum = Number.parseInt(genGradeId, 10);
+      if (!Number.isFinite(idNum) || idNum < 1) return null;
+      return { type: 'grade', gradeId: idNum };
     }
-  }, [initialLessons, selectedClassId, selectedTeacherId, teacherAvailabilitySlots]); // Updated dependencies
+    const idNum = Number.parseInt(genScopeClassId, 10);
+    if (!Number.isFinite(idNum) || idNum < 1) return null;
+    return { type: 'class', classId: idNum };
+  }, [genScopeType, genGradeId, genScopeClassId]);
+
+  // Changing scope invalidates a prior dry-run/commit pairing (roadmap 6.1 scope).
+  useEffect(() => {
+    setPendingCommit(false);
+    setDryRunResult(null);
+    setDryRunError(null);
+    setGenerationIdempotencyKey(null);
+  }, [genScopeType, genGradeId, genScopeClassId]);
+
+  // E5: merge filtered instance API events + teacher availability overlays
+  const calendarEvents = useMemo(() => {
+    const filtered = instanceSourceEvents.filter((ev) => {
+      const k = ev.extendedProps?.kind as string | undefined;
+      if (k === 'lesson_session' && !showLayerLessons) return false;
+      if (k === 'exam' && !showLayerExams) return false;
+      if (k === 'overlay') {
+        if (!showLayerOverlays) return false;
+        const overlayType = ev.extendedProps?.overlayType as string | undefined;
+        if (overlayType === 'HOLIDAY' && !showHolidayOverlays) return false;
+        if (overlayType === 'BREAK' && !showBreakOverlays) return false;
+        if (overlayType === 'EXAM_PERIOD' && !showExamPeriodOverlays) return false;
+      }
+      return true;
+    });
+
+    if (!selectedTeacherId || teacherAvailabilitySlots.length === 0) {
+      return filtered;
+    }
+
+    const unavailableSlots = teacherAvailabilitySlots.filter((slot) => !slot.isAvailable);
+    const dayNumbers: Record<PrismaDay, number> = {
+      MONDAY: 1,
+      TUESDAY: 2,
+      WEDNESDAY: 3,
+      THURSDAY: 4,
+      FRIDAY: 5,
+      SATURDAY: 6,
+      SUNDAY: 0,
+    };
+    const availabilityEvents = unavailableSlots.map((slot) => ({
+      id: `avail-${slot.id}`,
+      daysOfWeek: [dayNumbers[slot.dayOfWeek]],
+      startTime: formatDateTimeToTimeString(slot.startTime),
+      endTime: formatDateTimeToTimeString(slot.endTime),
+      display: 'background' as const,
+      color: 'rgba(255, 160, 122, 0.35)',
+      extendedProps: {
+        type: 'availability',
+        kind: 'availability',
+        isAvailable: slot.isAvailable,
+        notes: slot.notes,
+      },
+      editable: false,
+      eventStartEditable: false,
+      eventDurationEditable: false,
+    })) as ScheduleEvent[];
+
+    return [...filtered, ...availabilityEvents];
+  }, [
+    instanceSourceEvents,
+    showLayerLessons,
+    showLayerExams,
+    showLayerOverlays,
+    showHolidayOverlays,
+    showBreakOverlays,
+    showExamPeriodOverlays,
+    selectedTeacherId,
+    teacherAvailabilitySlots,
+  ]);
+
+  useEffect(() => {
+    if (lastRangeRef.current) {
+      refetchCalendar();
+    }
+  }, [selectedClassId, selectedTeacherId, refetchCalendar]);
 
   // NEW: Fetch teacher availability when selectedTeacherId or schoolId changes
   useEffect(() => {
-    if (selectedTeacherId && authUser?.schoolId) {
+    if (selectedTeacherId && pageSchoolId) {
       setAvailabilityLoading(true);
       setAvailabilityError(null);
       setTeacherAvailabilitySlots([]); // Clear previous slots
-      // Ensure schoolId is correctly passed; using authUser.schoolId as it's reliable
-      getTeacherAvailability(selectedTeacherId, authUser.schoolId)
+      // Ensure schoolId is correctly passed; using pageSchoolId as it's reliable
+      getTeacherAvailability(selectedTeacherId, pageSchoolId)
         .then(slots => {
           setTeacherAvailabilitySlots(slots || []); // Ensure slots is an array
           if ((!slots || slots.length === 0) && !availabilityError) { // Check for null/empty slots
@@ -202,13 +309,17 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
       setTeacherAvailabilitySlots([]); // Clear if no teacher or schoolId
       setAvailabilityError(null); // Clear error
     }
-  }, [selectedTeacherId, authUser?.schoolId, availabilityError]); // Added availabilityError to dependencies to avoid re-triggering on its own change
+  }, [selectedTeacherId, pageSchoolId, availabilityError]); // Added availabilityError to dependencies to avoid re-triggering on its own change
 
   // REMOVE useEffect for fetching data
 
   // --- Interaction Handlers --- 
 
    const handleSelect = useCallback((selectInfo: DateSelectArg) => {
+    if (!canEditLessons) {
+      toast.error(firstTemporalBlocker ?? "Schedule setup is incomplete.");
+      return;
+    }
     console.log("handleSelect triggered:", selectInfo);
     const dayNumber = selectInfo.start.getDay(); // 0 for Sunday, 1 for Monday, etc.
     const lessonDayPrisma = getDayString(dayNumber); // Converts to MONDAY, TUESDAY, etc. or null for Sat/Sun
@@ -300,7 +411,7 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
         teacher: selectedTeacherId
                 ? relatedDataForForm.teachers.find(t => t.id === selectedTeacherId)
                 : undefined,
-        schoolId: authUser?.schoolId 
+        schoolId: pageSchoolId 
       };
     console.log("Setting modal config for CREATE:", modalData);
     setModalConfig({
@@ -309,7 +420,7 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
       relatedData: relatedDataForForm,
     });
     setIsModalOpen(true);
-  }, [relatedDataForForm, selectedClassId, selectedTeacherId, authUser?.schoolId]);
+  }, [relatedDataForForm, selectedClassId, selectedTeacherId, pageSchoolId, canEditLessons, firstTemporalBlocker, teacherAvailabilitySlots]);
 
   const handleModalClose = (refreshNeeded: boolean) => {
     setIsModalOpen(false);
@@ -325,8 +436,40 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
     const { event, oldEvent, revert } = dropInfo; // Destructure revert
     const newStart = event.start;
     const newEnd = event.end;
-    const lessonId = parseInt(event.id);
+    const rawId = String(event.id);
+
+    if (rawId.startsWith('ls-')) {
+      const sessionId = Number.parseInt(rawId.replace(/^ls-/, ''), 10);
+      if (!pageSchoolId || !newStart || !newEnd || Number.isNaN(sessionId)) {
+        revert();
+        return;
+      }
+      startTransition(async () => {
+        const res = await fetch(`/api/schools/${pageSchoolId}/lesson-sessions/${sessionId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startTime: newStart.toISOString(), endTime: newEnd.toISOString(), lastOverrideReason: 'Drag-drop reschedule' }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err?.error ?? 'Failed to move session.');
+          revert();
+        } else {
+          toast.success('Session rescheduled (template unchanged).');
+          refetchCalendar();
+        }
+      });
+      return;
+    }
+
+    const lessonId = parseInt(rawId, 10);
     const dayString = getDayString(newStart?.getDay() ?? oldEvent.start?.getDay() ?? 0);
+
+    if (!canEditLessons) {
+      toast.error(firstTemporalBlocker ?? "Scheduling is locked until setup prerequisites are complete.");
+      revert();
+      return;
+    }
 
     if (!newStart || !newEnd || !dayString || isNaN(lessonId)) {
       // Add detailed logging here
@@ -357,14 +500,46 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
         // Data will be refreshed by path revalidation triggered by server action
       }
     });
-  }, [startTransition]);
+  }, [startTransition, canEditLessons, firstTemporalBlocker, pageSchoolId, refetchCalendar]);
 
    const handleEventResize = useCallback((resizeInfo: EventResizeDoneArg) => {
     const { event, revert } = resizeInfo; 
     const newStart = event.start;
     const newEnd = event.end;
-    const lessonId = parseInt(event.id);
+    const rawId = String(event.id);
+
+    if (rawId.startsWith('ls-')) {
+      const sessionId = Number.parseInt(rawId.replace(/^ls-/, ''), 10);
+      if (!pageSchoolId || !newStart || !newEnd || Number.isNaN(sessionId)) {
+        revert();
+        return;
+      }
+      startTransition(async () => {
+        const res = await fetch(`/api/schools/${pageSchoolId}/lesson-sessions/${sessionId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startTime: newStart.toISOString(), endTime: newEnd.toISOString(), lastOverrideReason: 'Resize' }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err?.error ?? 'Failed to resize session.');
+          revert();
+        } else {
+          toast.success('Session updated (template unchanged).');
+          refetchCalendar();
+        }
+      });
+      return;
+    }
+
+    const lessonId = parseInt(rawId, 10);
     const dayString = getDayString(newStart?.getDay() ?? event.start?.getDay() ?? 0);
+
+    if (!canEditLessons) {
+      toast.error(firstTemporalBlocker ?? "Scheduling is locked until setup prerequisites are complete.");
+      revert();
+      return;
+    }
 
     if (!newStart || !newEnd || !dayString || isNaN(lessonId)) {
       console.error("Invalid lesson data for resizing. Details:", {
@@ -393,29 +568,45 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
         toast.success("Lesson duration updated successfully!");
       }
     });
-  }, [startTransition]);
+  }, [startTransition, canEditLessons, firstTemporalBlocker, pageSchoolId, refetchCalendar]);
 
    const handleEventClick = useCallback((clickInfo: EventClickArg) => {
-       console.log('Event clicked:', clickInfo.event);
+       const eventData = clickInfo.event;
+       const ep = eventData.extendedProps as Record<string, unknown>;
+
+       if (ep?.type === 'availability' || ep?.kind === 'overlay') {
+         return;
+       }
+       if (ep?.kind === 'exam') {
+         toast('Exam blocks are edited from the Exams list or exam tools.', { type: 'info' });
+         return;
+       }
+       if (ep?.kind === 'lesson_session') {
+         setInstanceModalProps(ep);
+         setInstanceModalOpen(true);
+         return;
+       }
+
+       if (!canEditLessons) {
+         toast.error(firstTemporalBlocker ?? "Scheduling is locked until setup prerequisites are complete.");
+         return;
+       }
        if (!relatedDataForForm) {
          toast.error("Cannot edit lesson: prerequisite data not loaded.");
          return;
        }
-       // Prepare data for update form (extract from extendedProps)
-       const eventData = clickInfo.event;
        const lessonDataForForm = {
-           id: parseInt(eventData.id),
-           name: "", // Name might not be directly on event, maybe fetch? Or just pass ID
+           id: parseInt(String(eventData.id), 10),
+           name: "",
            startTime: eventData.start,
            endTime: eventData.end,
-           day: eventData.extendedProps.originalDay, // Use original day
+           day: eventData.extendedProps.originalDay,
            subjectId: eventData.extendedProps.subjectId,
            classId: eventData.extendedProps.classId,
            teacherId: eventData.extendedProps.teacherId,
-           // Include related subject/class/teacher objects if needed by form defaultValues
            subject: { id: eventData.extendedProps.subjectId, name: eventData.extendedProps.subject },
            class: { id: eventData.extendedProps.classId, name: eventData.extendedProps.className },
-           teacher: { id: eventData.extendedProps.teacherId, name: eventData.extendedProps.teacher.split(' ')[0], surname: eventData.extendedProps.teacher.split(' ')[1] || '' }
+           teacher: { id: eventData.extendedProps.teacherId, name: eventData.extendedProps.teacher?.split?.(' ')?.[0], surname: eventData.extendedProps.teacher?.split?.(' ')?.[1] || '' }
        };
        setModalConfig({
          type: 'update',
@@ -423,11 +614,88 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
          relatedData: relatedDataForForm,
        });
        setIsModalOpen(true);
-   }, [relatedDataForForm]);
+   }, [relatedDataForForm, canEditLessons, firstTemporalBlocker]);
 
   // Handler for changing the selected class
   const handleClassChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setSelectedClassId(event.target.value);
+  };
+
+  const callGenerateTermSchedule = async (mode: "dryRun" | "commit") => {
+    if (!pageSchoolId) {
+      toast.error("Missing school context.");
+      return;
+    }
+    if (!activeTermId) {
+      toast.error("No active term found for this school.");
+      return;
+    }
+
+    const scope = buildGenerationScope();
+    if (!scope) {
+      toast.error("Select a valid grade or class for this generation scope.");
+      return;
+    }
+
+    const idempotencyKey =
+      mode === "dryRun"
+        ? crypto.randomUUID()
+        : generationIdempotencyKey;
+
+    if (!idempotencyKey) {
+      toast.error("Missing idempotency key for commit.");
+      return;
+    }
+
+    setGenLoading(true);
+    setDryRunError(null);
+    try {
+      let simulateFailureAtOccurrenceIndex: number | undefined;
+      if (genSimulateFailureAt.trim() !== '') {
+        const n = Number.parseInt(genSimulateFailureAt, 10);
+        if (Number.isFinite(n) && n >= 0) simulateFailureAtOccurrenceIndex = n;
+      }
+
+      const res = await fetch(`/api/schools/${pageSchoolId}/generate-term-schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          termId: activeTermId,
+          mode,
+          idempotencyKey,
+          scope,
+          ...(simulateFailureAtOccurrenceIndex !== undefined
+            ? { simulateFailureAtOccurrenceIndex }
+            : {}),
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const code = data?.code ?? "REQUEST_FAILED";
+        const message = data?.error ?? "Request failed.";
+        toast.error(`${code}: ${message}`);
+        throw new Error(`${code}: ${message}`);
+      }
+
+      if (mode === "dryRun") {
+        setGenerationIdempotencyKey(idempotencyKey);
+        setDryRunResult(data as GenerateTermScheduleResponse);
+        setPendingCommit(true);
+        toast.success("Dry run complete. Review summary, then commit.");
+      } else {
+        setDryRunResult(data as GenerateTermScheduleResponse);
+        setPendingCommit(false);
+        toast.success("Lesson sessions generated for the term.");
+        router.refresh();
+        refetchCalendar();
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Request failed.";
+      setDryRunError(message);
+    } finally {
+      setGenLoading(false);
+    }
   };
 
   // Helper to get teacher name for display
@@ -436,9 +704,379 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
     return teacher ? `${teacher.name} ${teacher.surname}` : 'Selected Teacher';
   };
 
+  const handleGridLessonClick = useCallback(
+    (eventData: ScheduleEvent) => {
+      const mock = { event: eventData } as unknown as EventClickArg;
+      handleEventClick(mock);
+    },
+    [handleEventClick]
+  );
+
+  const handleGridExamClick = useCallback(
+    (eventData: ScheduleEvent) => {
+      const mock = { event: eventData } as unknown as EventClickArg;
+      handleEventClick(mock);
+    },
+    [handleEventClick]
+  );
+
+  const handleGridEmptyCellClick = useCallback(
+    ({ day, periodId }: { day: Date; periodId: string }) => {
+      const period = relatedDataForForm.periods?.find((p) => p.id === periodId);
+      if (!period) return;
+      const pStart = new Date(period.startTime);
+      const pEnd = new Date(period.endTime);
+      const start = new Date(day);
+      start.setHours(pStart.getHours(), pStart.getMinutes(), 0, 0);
+      const end = new Date(day);
+      end.setHours(pEnd.getHours(), pEnd.getMinutes(), 0, 0);
+      const mock = { start, end } as unknown as DateSelectArg;
+      handleSelect(mock);
+    },
+    [relatedDataForForm.periods, handleSelect]
+  );
+
+  const handleGridEmptyRangeSelect = useCallback(
+    ({ day, startPeriodId, endPeriodId }: { day: Date; startPeriodId: string; endPeriodId: string }) => {
+      if (!canEditLessons) {
+        toast.error(firstTemporalBlocker ?? "Schedule setup is incomplete.");
+        return;
+      }
+      const periods = relatedDataForForm.periods ?? [];
+      const startPeriod = periods.find((p) => p.id === startPeriodId);
+      const endPeriod = periods.find((p) => p.id === endPeriodId);
+      if (!startPeriod || !endPeriod) return;
+      const dayNumber = day.getDay();
+      const lessonDayPrisma = getDayString(dayNumber);
+      const dayForForm = lessonDayPrisma || (dayNumber === 0 ? PrismaDay.SUNDAY : PrismaDay.SATURDAY);
+
+      const start = new Date(day);
+      const startP = new Date(startPeriod.startTime);
+      start.setHours(startP.getHours(), startP.getMinutes(), 0, 0);
+      const end = new Date(day);
+      const endP = new Date(endPeriod.endTime);
+      end.setHours(endP.getHours(), endP.getMinutes(), 0, 0);
+
+      const modalData = {
+        startTime: start,
+        endTime: end,
+        day: dayForForm,
+        periodId: startPeriodId,
+        endPeriodId: startPeriodId === endPeriodId ? undefined : endPeriodId,
+        classId: selectedClassId ? parseInt(selectedClassId) : undefined,
+        teacherId: selectedTeacherId || undefined,
+        class: selectedClassId
+          ? relatedDataForForm.classes.find(c => c.id.toString() === selectedClassId)
+          : undefined,
+        teacher: selectedTeacherId
+          ? relatedDataForForm.teachers.find(t => t.id === selectedTeacherId)
+          : undefined,
+        schoolId: pageSchoolId
+      };
+
+      setModalConfig({
+        type: 'create',
+        data: modalData,
+        relatedData: relatedDataForForm,
+      });
+      setIsModalOpen(true);
+    },
+    [
+      canEditLessons,
+      firstTemporalBlocker,
+      relatedDataForForm,
+      selectedClassId,
+      selectedTeacherId,
+      pageSchoolId,
+    ]
+  );
+
+  const handleGridRangeChange = useCallback(
+    (start: Date, end: Date) => {
+      lastRangeRef.current = { start, end };
+      refetchCalendar();
+    },
+    [refetchCalendar]
+  );
+
   return (
     <div className="p-4 md:p-6">
       <h1 className="text-2xl font-semibold mb-4">Manage Schedule</h1>
+      {!canEditLessons && (
+        <div className="mb-4 p-4 rounded-md border border-amber-300 bg-amber-50 text-amber-800">
+          <p className="font-semibold">Scheduling is locked until temporal setup is complete.</p>
+          <ul className="list-disc pl-5 text-sm mt-2">
+            {(temporalStep?.blockers?.length ? temporalStep.blockers : schedulingReadiness.blockers).map((blocker, idx) => (
+              <li key={idx}>{blocker}</li>
+            ))}
+          </ul>
+          {pageSchoolId && (
+            <div className="mt-3 text-sm">
+              <Link
+                href={`/schools/${pageSchoolId}/admin/setup`}
+                className="underline font-medium"
+              >
+                Go to Scheduling Setup
+              </Link>
+            </div>
+          )}
+          {setupStatus?.checklist?.length > 0 && (
+            <div className="mt-3 text-sm">
+              <p className="font-medium mb-1">Readiness Checklist</p>
+              <ul className="list-disc pl-5">
+                {setupStatus.checklist.map((item, idx) => (
+                  <li key={`${item.label}-${idx}`}>
+                    {item.complete ? "✓" : "•"} {item.label}
+                    {!item.complete && item.blockers[0] ? ` - ${item.blockers[0]}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* E4 Term Generation — expands weekly Lesson templates into dated LessonSession rows (see docs/scheduling/LESSON_SCHEDULING_AND_TIMETABLE_GUIDE.md) */}
+      <div className="mb-4 p-4 rounded-md border border-indigo-200 bg-indigo-50">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-semibold text-indigo-900">Generate lesson sessions for this term</h2>
+            <p className="text-sm text-indigo-800 mt-1">
+              Builds dated lesson sessions from your <span className="font-medium">weekly templates</span>. The period
+              grid below shows <span className="font-medium">instances</span> for the visible range—after you change
+              templates, run a preview here so the term calendar fills in.
+            </p>
+            <p className="text-sm text-indigo-800 mt-2">
+              Active term:{" "}
+              <span className="font-medium">
+                {activeTermDisplay ?? activeTermId ?? "—"}
+              </span>
+            </p>
+            {pageSchoolId && (
+              <p className="text-sm mt-2">
+                <Link
+                  href={`/schools/${pageSchoolId}/admin/scheduling-diagnostics`}
+                  className="text-indigo-700 underline font-medium"
+                >
+                  Scheduling diagnostics
+                </Link>
+                <span className="text-indigo-800"> — audit log of generation runs and related activity.</span>
+              </p>
+            )}
+            <div className="mt-3 space-y-2 text-sm text-indigo-900">
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="genScope" className="font-medium">
+                  Scope:
+                </label>
+                <select
+                  id="genScope"
+                  className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-sm"
+                  value={genScopeType}
+                  onChange={(e) =>
+                    setGenScopeType(e.target.value as 'school' | 'grade' | 'class')
+                  }
+                  disabled={genLoading || !setupStatus.canGenerate}
+                >
+                  <option value="school">School-wide</option>
+                  <option value="grade">One grade (all classes in grade)</option>
+                  <option value="class">One class</option>
+                </select>
+                {genScopeType === 'grade' && (
+                  <select
+                    className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-sm min-w-[140px]"
+                    value={genGradeId}
+                    onChange={(e) => setGenGradeId(e.target.value)}
+                    disabled={genLoading || !setupStatus.canGenerate}
+                  >
+                    <option value="">Select grade…</option>
+                    {(initialRelatedData.grades ?? []).map((g) => (
+                      <option key={g.id} value={String(g.id)}>
+                        {g.level}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {genScopeType === 'class' && (
+                  <select
+                    className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-sm min-w-[160px]"
+                    value={genScopeClassId}
+                    onChange={(e) => setGenScopeClassId(e.target.value)}
+                    disabled={genLoading || !setupStatus.canGenerate}
+                  >
+                    <option value="">Select class…</option>
+                    {initialRelatedData.classes.map((c: { id: number; name: string }) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {genScopeType === "school" && (
+                <p className="text-xs text-indigo-800">
+                  School-wide scope affects every class—use <span className="font-medium">Dry run</span> first to
+                  preview counts and conflicts before <span className="font-medium">Commit</span>.
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="genSimFail" className="text-indigo-700">
+                  Rollback test (optional): fail at occurrence index
+                </label>
+                <input
+                  id="genSimFail"
+                  type="number"
+                  min={0}
+                  className="w-24 rounded-md border border-indigo-200 bg-white px-2 py-1 text-sm"
+                  placeholder="—"
+                  value={genSimulateFailureAt}
+                  onChange={(e) => setGenSimulateFailureAt(e.target.value)}
+                  disabled={genLoading || !setupStatus.canGenerate}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="px-3 py-2 rounded-md bg-indigo-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!setupStatus.canGenerate || !activeTermId || genLoading}
+              onClick={() => callGenerateTermSchedule("dryRun")}
+            >
+              {genLoading ? "Working..." : "Dry Run"}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!setupStatus.canGenerate || !activeTermId || genLoading || !pendingCommit}
+              onClick={() => callGenerateTermSchedule("commit")}
+            >
+              {genLoading ? "Working..." : "Commit"}
+            </button>
+          </div>
+        </div>
+
+        {!setupStatus.canGenerate && (
+          <div className="mt-3 text-sm text-amber-800">
+            <p className="font-medium">Term generation is locked.</p>
+            <ul className="list-disc pl-5 mt-1">
+              {setupStatus.blockers?.length
+                ? setupStatus.blockers.map((b, idx) => <li key={`${b}-${idx}`}>{b}</li>)
+                : null}
+            </ul>
+          </div>
+        )}
+
+        {dryRunError && (
+          <div className="mt-3 text-sm text-red-700">
+            <p className="font-medium">Dry run failed</p>
+            <p className="mt-1">{dryRunError}</p>
+          </div>
+        )}
+
+        {dryRunResult && (
+          <div className="mt-4">
+            <div className="text-sm font-medium text-indigo-900">
+              {pendingCommit ? "Dry run summary" : "Last run result"}
+            </div>
+            <p className="text-xs text-indigo-700 mt-1">
+              Scope:{" "}
+              <span className="font-mono">
+                {dryRunResult.scope.type === "school"
+                  ? "school-wide"
+                  : dryRunResult.scope.type === "grade"
+                    ? `grade:${dryRunResult.scope.gradeId}`
+                    : `class:${dryRunResult.scope.classId}`}
+              </span>
+              {typeof dryRunResult.durationMs === "number" ? (
+                <>
+                  {" "}
+                  · Duration: <span className="font-mono">{dryRunResult.durationMs} ms</span>
+                </>
+              ) : null}
+            </p>
+            <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="p-2 rounded-md bg-white border border-indigo-100">
+                <div className="text-xs text-indigo-600">Total candidates</div>
+                <div className="text-base font-semibold">{dryRunResult.summary.totalCandidates}</div>
+              </div>
+              <div className="p-2 rounded-md bg-white border border-indigo-100">
+                <div className="text-xs text-indigo-600">Would create</div>
+                <div className="text-base font-semibold">{dryRunResult.summary.createdCount}</div>
+              </div>
+              <div className="p-2 rounded-md bg-white border border-indigo-100">
+                <div className="text-xs text-indigo-600">Conflicted</div>
+                <div className="text-base font-semibold">{dryRunResult.summary.conflictedCount}</div>
+              </div>
+              <div className="p-2 rounded-md bg-white border border-indigo-100">
+                <div className="text-xs text-indigo-600">Conflicts logged</div>
+                <div className="text-base font-semibold">{dryRunResult.conflicts.length}</div>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <div className="text-sm font-medium text-indigo-900">Skipped by reason</div>
+              <ul className="list-disc pl-5 text-sm mt-1">
+                {Object.entries(dryRunResult.summary.skippedByReason).map(([reason, count]) => (
+                  <li key={reason}>
+                    {reason}: {count}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {dryRunResult.conflicts.length > 0 && (
+              <div className="mt-4">
+                <div className="text-sm font-medium text-indigo-900">Exam overlap conflicts</div>
+                <div className="mt-2 overflow-x-auto">
+                  <table className="min-w-full text-xs bg-white border border-indigo-100 rounded-md">
+                    <thead>
+                      <tr className="bg-indigo-50">
+                        <th className="px-3 py-2 text-left">Session Date</th>
+                        <th className="px-3 py-2 text-left">Template Lesson</th>
+                        <th className="px-3 py-2 text-left">Reason</th>
+                        <th className="px-3 py-2 text-left">Overlapping Exams</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dryRunResult.conflicts.slice(0, 50).map((c, idx) => (
+                        <tr key={`${c.templateLessonId}-${c.sessionDate.toString()}-${idx}`} className="border-t border-indigo-50">
+                          <td className="px-3 py-2">{new Date(c.sessionDate).toLocaleDateString()}</td>
+                          <td className="px-3 py-2">{c.templateLessonId}</td>
+                          <td className="px-3 py-2">{c.reason}</td>
+                          <td className="px-3 py-2">{c.overlappingExamIds.join(", ")}</td>
+                        </tr>
+                      ))}
+                      {dryRunResult.conflicts.length > 50 && (
+                        <tr>
+                          <td className="px-3 py-2 text-gray-500" colSpan={4}>
+                            Showing first 50 conflicts.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-3 text-xs text-indigo-800">
+              Commit will create `LessonSession` rows for eligible slots (skipping duplicates and conflicts).
+            </div>
+            {pageSchoolId && (
+              <div className="mt-3 text-sm">
+                <Link
+                  href={`/schools/${pageSchoolId}/admin/scheduling-diagnostics`}
+                  className="text-indigo-700 underline font-medium"
+                >
+                  View in scheduling diagnostics
+                </Link>
+                <span className="text-indigo-800"> for this run in the audit log.</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Add Class Filter Dropdown */}
       <div className="mb-4">
@@ -487,7 +1125,7 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
       {selectedTeacherId && !availabilityLoading && !availabilityError && teacherAvailabilitySlots.length > 0 && (
         <div className="mb-4 p-3 border border-gray-200 rounded-md bg-indigo-50 text-xs">
           <h3 className="font-semibold text-gray-700 mb-1.5">
-            {getTeacherDisplayName(selectedTeacherId)}'s Explicit Time Blocks (Unavailable):
+            {getTeacherDisplayName(selectedTeacherId)}&apos;s Explicit Time Blocks (Unavailable):
           </h3>
           <ul className="space-y-1 list-disc list-inside">
             {teacherAvailabilitySlots.filter(slot => !slot.isAvailable).map(slot => (
@@ -508,14 +1146,55 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
 
       {/* Calendar Container */}
       <div className="bg-white p-4 rounded-md shadow-md relative min-h-[600px]" style={{ height: 'calc(100vh - 200px)' }}> {/* Adjusted height slightly */}
-        <BigCalendar 
-          data={events} 
-          editable={true} 
-          selectable={true} 
-          select={handleSelect} 
-          eventClick={handleEventClick}
-          eventDrop={handleEventDrop}
-          eventResize={handleEventResize}
+        {calendarLoading && (
+          <p className="text-xs text-gray-500 mb-2">Loading calendar…</p>
+        )}
+        <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
+          <span className="font-medium text-gray-700">Legend:</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-blue-600" /> Lesson instance</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Exam</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-yellow-400 border border-yellow-700" /> Recurring exam</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-gray-300" /> Blocked day</span>
+        </div>
+        <div className="flex flex-wrap gap-4 mb-3 text-sm">
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={showLayerLessons} onChange={(e) => setShowLayerLessons(e.target.checked)} />
+            Lessons
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={showLayerExams} onChange={(e) => setShowLayerExams(e.target.checked)} />
+            Exams
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={showLayerOverlays} onChange={(e) => setShowLayerOverlays(e.target.checked)} />
+            Holidays / breaks / exam periods
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={showHolidayOverlays} onChange={(e) => setShowHolidayOverlays(e.target.checked)} />
+            Holidays
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={showBreakOverlays} onChange={(e) => setShowBreakOverlays(e.target.checked)} />
+            Breaks
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showExamPeriodOverlays}
+              onChange={(e) => setShowExamPeriodOverlays(e.target.checked)}
+            />
+            Exam periods
+          </label>
+        </div>
+        <PeriodGridCalendar
+          events={calendarEvents}
+          periods={relatedDataForForm.periods ?? []}
+          loading={calendarLoading}
+          onRangeChange={handleGridRangeChange}
+          onLessonClick={handleGridLessonClick}
+          onExamClick={handleGridExamClick}
+          onEmptyCellClick={handleGridEmptyCellClick}
+          onEmptyRangeSelect={handleGridEmptyRangeSelect}
         />
       </div>
 
@@ -529,6 +1208,20 @@ const AdminScheduleClient = ({ initialLessons, initialRelatedData, authUser }: A
           isOpen={isModalOpen} 
           onClose={() => handleModalClose(false)}
           authUser={authUser} // Pass authUser prop
+        />
+      )}
+      {pageSchoolId && (
+        <LessonSessionInstanceModal
+          isOpen={instanceModalOpen}
+          onClose={(refresh) => {
+            setInstanceModalOpen(false);
+            setInstanceModalProps(null);
+            if (refresh) refetchCalendar();
+          }}
+          schoolId={pageSchoolId}
+          extendedProps={instanceModalProps}
+          rooms={initialRelatedData.rooms ?? []}
+          teachers={initialRelatedData.teachers}
         />
       )}
     </div>

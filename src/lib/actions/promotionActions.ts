@@ -3,6 +3,7 @@
 import prisma from '@/lib/prisma';
 import { revalidatePath } from 'next/cache';
 import { getServerUser } from '@/lib/auth';
+import { userHasSchoolAccess } from '@/lib/schoolAccess';
 import { getStudentAcademicSummary } from '@/lib/gradeCalculation';
 
 export type PromotionDecision = 'PROMOTED' | 'RETAINED' | 'BORDERLINE';
@@ -84,7 +85,7 @@ export async function generatePromotionSuggestions(
   academicYearId: string
 ): Promise<{ success: boolean; message?: string; suggestions?: StudentPromotionSuggestion[] }> {
   const user = await getServerUser();
-  if (!user || user.role !== 'admin' || user.schoolId !== schoolId) {
+  if (!user || user.role !== 'admin' || !(await userHasSchoolAccess(user, schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 
@@ -220,9 +221,8 @@ export async function applyPromotionsAction(data: {
               studentId: item.studentId,
               classId: targetClass.id,
               academicYearId: data.targetAcademicYearId,
-              schoolId: data.schoolId,
               enrollmentDate: new Date(),
-              status: 'ACTIVE',
+              status: 'ENROLLED',
             },
           });
 
@@ -241,7 +241,7 @@ export async function applyPromotionsAction(data: {
             },
             data: {
               departureDate: new Date(),
-              status: 'RETAINED',
+              status: 'REPEATED',
             },
           });
 
@@ -270,9 +270,8 @@ export async function applyPromotionsAction(data: {
                   studentId: item.studentId,
                   classId: retainClass.id,
                   academicYearId: data.targetAcademicYearId,
-                  schoolId: data.schoolId,
                   enrollmentDate: new Date(),
-                  status: 'ACTIVE',
+                  status: 'ENROLLED',
                 },
               });
 

@@ -35,6 +35,7 @@ import {
   KeyIcon,
   ChartBarIcon,
   ArrowPathIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline';
 
 interface MembershipInfo {
@@ -43,6 +44,7 @@ interface MembershipInfo {
   schoolName: string;
   role: string;
   isActive: boolean;
+  profileId?: string;
 }
 
 const menuItems = [
@@ -143,9 +145,45 @@ const menuItems = [
         visible: ["admin"],
       },
       {
+        icon: ClipboardDocumentCheckIcon,
+        label: "Scheduling Setup",
+        href: "/admin/setup",
+        visible: ["admin"],
+      },
+      {
+        icon: ArrowsRightLeftIcon,
+        label: "Timetable assistant",
+        href: "/admin/timetable-assistant",
+        visible: ["admin"],
+      },
+      {
+        icon: ArrowsRightLeftIcon,
+        label: "Whole-school timetable",
+        href: "/admin/timetable-assistant/school",
+        visible: ["admin"],
+      },
+      {
+        icon: ClockIcon,
+        label: "Bell schedule",
+        href: "/admin/setup/bell-schedule",
+        visible: ["admin"],
+      },
+      {
+        icon: CalendarDaysIcon,
+        label: "Calendar exceptions",
+        href: "/admin/calendar-exceptions",
+        visible: ["admin"],
+      },
+      {
         icon: UserCircleIcon,
         label: "Teacher Availability",
         href: "/teacher/availability",
+        visible: ["teacher"],
+      },
+      {
+        icon: BuildingStorefrontIcon,
+        label: "Marketplace Profile",
+        href: "/teacher/marketplace",
         visible: ["teacher"],
       },
       {
@@ -233,6 +271,12 @@ const menuItems = [
         icon: CreditCardIcon,
         label: "Subscription",
         href: "/admin/subscription",
+        visible: ["admin"],
+      },
+      {
+        icon: BuildingStorefrontIcon,
+        label: "Teacher Marketplace",
+        href: "/admin/marketplace",
         visible: ["admin"],
       },
     ],
@@ -404,6 +448,8 @@ const Menu = () => {
   };
 
   const hasMultipleSchools = (authUser?.memberships?.length ?? 0) > 1;
+  const schoolIdStr = Array.isArray(schoolIdFromParams) ? schoolIdFromParams[0] : schoolIdFromParams;
+  const currentSchoolName = authUser?.memberships?.find((m) => m.schoolId === schoolIdStr)?.schoolName;
   
   if (loadingAuth && !authUser && typeof window !== 'undefined' && window.location.pathname !== '/sign-in' && window.location.pathname !== '/create-school') {
     return <div className="w-64 h-screen bg-gray-100 p-3 flex flex-col" />;
@@ -423,7 +469,12 @@ const Menu = () => {
     >
       <div className="flex-grow overflow-y-auto overflow-x-hidden">
         {hasMultipleSchools && isOpen && (
-          <div className="px-3 pt-3 pb-1">
+          <div className="px-3 pt-3 pb-1 space-y-1">
+            {currentSchoolName && (
+              <p className="px-1 text-xs text-gray-500 truncate" title={currentSchoolName}>
+                Current: <span className="font-medium text-gray-700">{currentSchoolName}</span>
+              </p>
+            )}
             <button
               onClick={() => router.push('/select-school')}
               className="w-full flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm hover:border-blue-400 hover:shadow-sm transition-all"

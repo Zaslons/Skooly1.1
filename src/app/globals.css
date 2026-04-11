@@ -106,3 +106,16 @@
   color: gray !important;
   margin-bottom: 5px;
 }
+
+/* E5 FullCalendar instance / exam / overlay */
+.fc-e5-lesson-session .fc-event-main {
+  background-color: #2563eb !important;
+  border-color: #1d4ed8 !important;
+  color: #fff !important;
+}
+.fc-e5-exam .fc-event-main {
+  border-width: 2px !important;
+}
+.fc-e5-overlay {
+  opacity: 0.45;
+}

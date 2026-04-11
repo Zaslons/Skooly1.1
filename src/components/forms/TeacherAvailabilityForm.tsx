@@ -15,7 +15,7 @@ import { Day } from "@prisma/client"; // For Day enum
 interface TeacherAvailabilityFormProps {
   type: "create" | "update";
   // For updates, existing data will be passed
-  data?: Partial<TeacherAvailabilitySchema> & { id?: string; startTime?: Date; endTime?: Date };
+  data?: Partial<TeacherAvailabilitySchema> & { id?: string; startTime?: Date | string; endTime?: Date | string };
   onClose: () => void; // Function to close the modal or form container
   teacherId?: string; // Needed if an admin is setting this, otherwise derived from authUser
   schoolId?: string;  // Needed if an admin is setting this

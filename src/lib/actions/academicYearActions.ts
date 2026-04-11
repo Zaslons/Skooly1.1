@@ -4,6 +4,16 @@ import prisma from '@/lib/prisma';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { getServerUser } from '@/lib/auth';
+import { userHasSchoolAccess } from '@/lib/schoolAccess';
+import {
+  assertStartBeforeEnd,
+  cloneTermPatternToAcademicYear,
+  findOverlappingAcademicYear,
+  setSingleActiveAcademicYear,
+  TemporalRuleError,
+  toDate,
+} from '@/lib/domain/temporalRules';
+import { schedulingActionFailure } from '@/lib/schedulingErrorContract';
 
 const CreateAcademicYearSchema = z.object({
   name: z.string().min(3, { message: "Name must be at least 3 characters long." }),
@@ -23,24 +33,15 @@ interface CreateAcademicYearData {
 }
 
 async function checkOverlappingAcademicYears(schoolId: string, startDate: Date, endDate: Date, excludeId?: string) {
-  const overlapping = await prisma.academicYear.findFirst({
-    where: {
-      schoolId,
-      isArchived: false,
-      ...(excludeId ? { id: { not: excludeId } } : {}),
-      OR: [
-        { startDate: { lte: endDate }, endDate: { gte: startDate } },
-      ],
-    },
-    select: { name: true },
-  });
-  return overlapping;
+  return findOverlappingAcademicYear({ schoolId, startDate, endDate, excludeId });
 }
 
 export async function createAcademicYearAction(data: CreateAcademicYearData) {
   const currentUser = await getServerUser(); 
   if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
-    return { success: false, message: "You are not authorized to perform this action." };
+    return {
+      ...schedulingActionFailure("FORBIDDEN", "You are not authorized to perform this action."),
+    };
   }
   
   const validatedFields = CreateAcademicYearSchema.safeParse({
@@ -52,26 +53,59 @@ export async function createAcademicYearAction(data: CreateAcademicYearData) {
 
   if (!validatedFields.success) {
     const firstError = Object.values(validatedFields.error.flatten().fieldErrors)[0]?.[0];
-    return { success: false, message: `Validation failed: ${firstError || 'Invalid input.'}` };
+    return {
+      ...schedulingActionFailure(
+        "INVALID_INPUT",
+        `Validation failed: ${firstError || "Invalid input."}`,
+        validatedFields.error.flatten().fieldErrors as Record<string, string[] | undefined>
+      ),
+    };
   }
 
   const { name, startDate, endDate, schoolId } = validatedFields.data;
 
   try {
+    assertStartBeforeEnd(startDate, endDate, 'academicYear');
     const overlapping = await checkOverlappingAcademicYears(schoolId, startDate, endDate);
     if (overlapping) {
       return { success: false, message: `Date range overlaps with existing academic year "${overlapping.name}".` };
     }
 
-    const newAcademicYear = await prisma.academicYear.create({
-      data: {
-        name,
-        startDate,
-        endDate,
-        schoolId,
-        isActive: false,
-        isArchived: false,
-      },
+    const newAcademicYear = await prisma.$transaction(async (tx) => {
+      const created = await tx.academicYear.create({
+        data: {
+          name,
+          startDate,
+          endDate,
+          schoolId,
+          isActive: false,
+          isArchived: false,
+        },
+      });
+
+      const latestPreviousYear = await tx.academicYear.findFirst({
+        where: {
+          schoolId,
+          isArchived: false,
+          id: { not: created.id },
+        },
+        orderBy: { startDate: "desc" },
+        select: { id: true, startDate: true },
+      });
+
+      if (latestPreviousYear) {
+        await cloneTermPatternToAcademicYear({
+          tx,
+          schoolId,
+          sourceAcademicYearId: latestPreviousYear.id,
+          targetAcademicYearId: created.id,
+          sourceAcademicYearStart: latestPreviousYear.startDate,
+          targetAcademicYearStart: created.startDate,
+          targetAcademicYearEnd: created.endDate,
+        });
+      }
+
+      return created;
     });
 
     revalidatePath(`/schools/${schoolId}/academic-years`);
@@ -141,7 +175,12 @@ export async function updateAcademicYearAction(academicYearId: string, data: Upd
   const finalStartDate = startDate || existingAcademicYear.startDate;
   const finalEndDate = endDate || existingAcademicYear.endDate;
 
-  if (finalStartDate >= finalEndDate) {
+  try {
+    assertStartBeforeEnd(toDate(finalStartDate), toDate(finalEndDate), 'academicYear');
+  } catch (error) {
+    if (error instanceof TemporalRuleError) {
+      return { success: false, message: error.message };
+    }
     return { success: false, message: "Start date must be before end date." };
   }
 
@@ -267,7 +306,7 @@ export async function unarchiveAcademicYearAction(academicYearId: string) {
 
 export async function setActiveAcademicYearAction(academicYearId: string, schoolId: string) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, schoolId))) {
     return { success: false, message: "You are not authorized to perform this action for this school." };
   }
 
@@ -303,20 +342,7 @@ export async function setActiveAcademicYearAction(academicYearId: string, school
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.academicYear.updateMany({
-        where: { schoolId, id: { not: academicYearId } },
-        data: { isActive: false },
-      });
-
-      await tx.academicYear.update({
-        where: { id: academicYearId },
-        data: { isActive: true, isArchived: false },
-      });
-
-      await tx.school.update({
-        where: { id: schoolId },
-        data: { activeAcademicYearId: academicYearId },
-      });
+      await setSingleActiveAcademicYear({ tx, schoolId, academicYearId });
     });
 
     revalidatePath(`/schools/${schoolId}/academic-years`);
@@ -328,9 +354,56 @@ export async function setActiveAcademicYearAction(academicYearId: string, school
   }
 }
 
+export async function deactivateAcademicYearAction(academicYearId: string, schoolId: string) {
+  const currentUser = await getServerUser();
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, schoolId))) {
+    return { success: false, message: "You are not authorized to perform this action for this school." };
+  }
+
+  const academicYear = await prisma.academicYear.findUnique({
+    where: { id: academicYearId, schoolId },
+    select: { id: true, isArchived: true },
+  });
+
+  if (!academicYear) {
+    return { success: false, message: "Academic Year not found or does not belong to this school." };
+  }
+  if (academicYear.isArchived) {
+    return { success: false, message: "Cannot deactivate an archived academic year." };
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.academicYear.update({
+        where: { id: academicYearId },
+        data: { isActive: false },
+      });
+
+      const school = await tx.school.findUnique({
+        where: { id: schoolId },
+        select: { activeAcademicYearId: true },
+      });
+
+      if (school?.activeAcademicYearId === academicYearId) {
+        await tx.school.update({
+          where: { id: schoolId },
+          data: { activeAcademicYearId: null },
+        });
+      }
+    });
+
+    revalidatePath(`/schools/${schoolId}/academic-years`);
+    revalidatePath(`/schools/${schoolId}/admin`);
+
+    return { success: true, message: "Academic Year deactivated successfully." };
+  } catch {
+    return { success: false, message: "Failed to deactivate academic year." };
+  }
+}
+
 export async function deleteAcademicYearAction(academicYearId: string, schoolId: string) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, schoolId))) {
     return { success: false, message: "You are not authorized to delete this academic year." };
   }
 

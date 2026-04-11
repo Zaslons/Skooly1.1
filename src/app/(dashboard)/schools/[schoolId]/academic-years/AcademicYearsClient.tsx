@@ -10,7 +10,8 @@ import {
   updateAcademicYearAction,
   archiveAcademicYearAction,
   unarchiveAcademicYearAction,
-  setActiveAcademicYearAction
+  setActiveAcademicYearAction,
+  deactivateAcademicYearAction
 } from '@/lib/actions/academicYearActions';
 
 // Basic type for AcademicYear - align with Prisma model
@@ -22,13 +23,18 @@ interface AcademicYear {
   isActive: boolean;
   isArchived: boolean;
   schoolId: string;
+  terms?: { id: string; isActive: boolean; isArchived: boolean; startDate: string; endDate: string }[];
   // activeSchoolAcademicYearId is not part of AY, but passed to client
 }
 
 interface AcademicYearsClientProps {
   schoolId: string;
   initialAcademicYears: AcademicYear[];
-  activeSchoolAcademicYearId: string | null; // The ID of the school's currently active AY
+  automationSummary: {
+    activeAcademicYear: { id: string; name: string; startDate: string; endDate: string } | null;
+    activeTerm: { id: string; name: string; startDate: string; endDate: string } | null;
+    nextAcademicYear: { id: string; name: string; startDate: string; endDate: string } | null;
+  };
 }
 
 // Placeholder for a Modal component - you'll need to have one or build one
@@ -59,7 +65,7 @@ const Button = ({ onClick, children, variant = 'primary', ...props }: any) => {
 }
 
 
-export default function AcademicYearsClient({ schoolId, initialAcademicYears, activeSchoolAcademicYearId }: AcademicYearsClientProps) {
+export default function AcademicYearsClient({ schoolId, initialAcademicYears, automationSummary }: AcademicYearsClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -154,23 +160,6 @@ export default function AcademicYearsClient({ schoolId, initialAcademicYears, ac
     });
   };
 
-  const handleSetActive = async (ayId: string) => {
-    if (activeSchoolAcademicYearId === ayId) {
-        toast.info("This academic year is already active.");
-        return;
-    }
-    if (!confirm('Are you sure you want to set this academic year as active? This will deactivate any other active year.')) return;
-    startTransition(async () => {
-      try {
-        const result = await setActiveAcademicYearAction(ayId, schoolId);
-        if (result.success) toast.success(result.message);
-        router.refresh();
-      } catch (error: any) {
-        toast.error(error.message || 'Failed to set active academic year.');
-      }
-    });
-  };
-
   const handleToggleArchive = async (ay: AcademicYear) => {
     const actionText = ay.isArchived ? 'unarchive' : 'archive';
     if (!confirm(`Are you sure you want to ${actionText} this academic year?`)) return;
@@ -194,25 +183,96 @@ export default function AcademicYearsClient({ schoolId, initialAcademicYears, ac
   // Function to determine status text
   const getStatusText = (ay: AcademicYear) => {
     if (ay.isArchived) return "Archived";
-    if (activeSchoolAcademicYearId === ay.id) return "Active"; // Use prop passed from server
-    // Add more sophisticated logic for "Past", "Upcoming" based on dates if needed
     const today = new Date();
     const startDate = new Date(ay.startDate);
     const endDate = new Date(ay.endDate);
+    if (startDate <= today && endDate >= today) return "Active";
     if (endDate < today) return "Past";
     if (startDate > today) return "Upcoming";
-    return "Current (Not Active)"; // If within dates but not the *school's* active AY
+    return "Inactive";
+  };
+
+  const filteredAcademicYears = academicYears.filter((ay) => {
+    const activeId = automationSummary.activeAcademicYear?.id;
+    const nextId = automationSummary.nextAcademicYear?.id;
+    return ay.id === activeId || ay.id === nextId;
+  });
+
+  const handleSetActive = async (ayId: string) => {
+    startTransition(async () => {
+      const result = await setActiveAcademicYearAction(ayId, schoolId);
+      if (result.success) {
+        toast.success(result.message);
+        router.refresh();
+      } else {
+        toast.error(result.message);
+      }
+    });
+  };
+
+  const handleDeactivate = async (ayId: string) => {
+    startTransition(async () => {
+      const result = await deactivateAcademicYearAction(ayId, schoolId);
+      if (result.success) {
+        toast.success(result.message);
+        router.refresh();
+      } else {
+        toast.error(result.message);
+      }
+    });
   };
 
 
   return (
     <div>
+      <div className="mb-4 p-4 rounded-md border border-blue-200 bg-blue-50">
+        <h2 className="text-sm font-semibold text-blue-900 mb-2">Automation Settings</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+          <div>
+            <p className="text-blue-700 font-medium">Auto-active Academic Year</p>
+            {automationSummary.activeAcademicYear ? (
+              <p className="text-gray-800">
+                {automationSummary.activeAcademicYear.name} (
+                {new Date(automationSummary.activeAcademicYear.startDate).toLocaleDateString()} -{" "}
+                {new Date(automationSummary.activeAcademicYear.endDate).toLocaleDateString()})
+              </p>
+            ) : (
+              <p className="text-gray-600">No active academic year by date.</p>
+            )}
+          </div>
+          <div>
+            <p className="text-blue-700 font-medium">Auto-active Term</p>
+            {automationSummary.activeTerm ? (
+              <p className="text-gray-800">
+                {automationSummary.activeTerm.name} (
+                {new Date(automationSummary.activeTerm.startDate).toLocaleDateString()} -{" "}
+                {new Date(automationSummary.activeTerm.endDate).toLocaleDateString()})
+              </p>
+            ) : (
+              <p className="text-gray-600">No active term by date.</p>
+            )}
+          </div>
+          <div>
+            <p className="text-blue-700 font-medium">Next Auto-generated Year</p>
+            {automationSummary.nextAcademicYear ? (
+              <p className="text-gray-800">
+                {automationSummary.nextAcademicYear.name} (
+                {new Date(automationSummary.nextAcademicYear.startDate).toLocaleDateString()} -{" "}
+                {new Date(automationSummary.nextAcademicYear.endDate).toLocaleDateString()})
+              </p>
+            ) : (
+              <p className="text-gray-600">No upcoming academic year available.</p>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="mb-4 flex justify-between items-center">
         <Button onClick={() => openModal('create')} variant="primary">
           {/* <PlusIcon className="h-5 w-5 mr-2" /> */}
           Add New Academic Year
         </Button>
-        <div className="flex items-center">
+        <div className="flex items-center gap-4">
           <input
             type="checkbox"
             id="showArchived"
@@ -232,28 +292,39 @@ export default function AcademicYearsClient({ schoolId, initialAcademicYears, ac
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start Date</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">End Date</th>
+              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Terms</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {isPending && academicYears.length === 0 && (
-                <tr><td colSpan={5} className="p-4 text-center text-gray-500">Loading...</td></tr>
+            {isPending && filteredAcademicYears.length === 0 && (
+                <tr><td colSpan={6} className="p-4 text-center text-gray-500">Loading...</td></tr>
             )}
-            {!isPending && academicYears.length === 0 && (
+            {!isPending && filteredAcademicYears.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
-                  No academic years found. {showArchived ? "" : "Try showing archived ones."}
+                <td colSpan={6} className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
+                  No academic years found for current/next view.
                 </td>
               </tr>
             )}
-            {academicYears.map((ay) => (
+            {filteredAcademicYears.map((ay) => (
               <tr key={ay.id} className={`${ay.isArchived ? 'bg-gray-100 opacity-70' : ''}`}>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{ay.name}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(ay.startDate).toLocaleDateString()}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(ay.endDate).toLocaleDateString()}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <span className="font-medium">{ay.terms?.length ?? 0}</span>
+                  {(ay.terms?.some((term) => {
+                    if (term.isArchived) return false;
+                    const now = new Date();
+                    const start = new Date(term.startDate);
+                    const end = new Date(term.endDate);
+                    return start <= now && end >= now;
+                  })) ? " (active term)" : ""}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${ay.isArchived ? 'bg-gray-100 text-gray-800' : activeSchoolAcademicYearId === ay.id ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                  <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${ay.isArchived ? 'bg-gray-100 text-gray-800' : getStatusText(ay) === "Active" ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
                     {getStatusText(ay)}
                   </span>
                 </td>
@@ -263,9 +334,23 @@ export default function AcademicYearsClient({ schoolId, initialAcademicYears, ac
                       <Button onClick={() => openModal('edit', ay)} variant="outline" className="text-indigo-600 hover:text-indigo-900">
                         Edit
                       </Button>
-                      {activeSchoolAcademicYearId !== ay.id && (
-                        <Button onClick={() => handleSetActive(ay.id)} variant="outline" className="text-green-600 hover:text-green-900">
-                          Set Active
+                      {getStatusText(ay) !== "Active" ? (
+                        <Button
+                          onClick={() => handleSetActive(ay.id)}
+                          variant="outline"
+                          className="text-green-600 hover:text-green-900"
+                          disabled={isPending}
+                        >
+                          Activate
+                        </Button>
+                      ) : (
+                        <Button
+                          onClick={() => handleDeactivate(ay.id)}
+                          variant="outline"
+                          className="text-orange-600 hover:text-orange-900"
+                          disabled={isPending}
+                        >
+                          Deactivate
                         </Button>
                       )}
                       <Button 
@@ -281,6 +366,13 @@ export default function AcademicYearsClient({ schoolId, initialAcademicYears, ac
                         className="text-teal-600 hover:text-teal-900"
                       >
                         Classes
+                      </Button>
+                      <Button
+                        onClick={() => router.push(`/schools/${schoolId}/academic-years/${ay.id}/terms`)}
+                        variant="outline"
+                        className="text-sky-600 hover:text-sky-900"
+                      >
+                        Terms
                       </Button>
                     </>
                   )}

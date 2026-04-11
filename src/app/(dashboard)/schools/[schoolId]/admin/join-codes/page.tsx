@@ -1,5 +1,6 @@
 import prisma from '@/lib/prisma';
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 import { redirect } from 'next/navigation';
 import JoinCodesClient from './JoinCodesClient';
 
@@ -7,7 +8,7 @@ export default async function JoinCodesPage({ params }: { params: { schoolId: st
   const { schoolId } = await params;
   const user = await getServerUser();
 
-  if (!user || (user.role !== 'admin' && user.role !== 'system_admin') || user.schoolId !== schoolId) {
+  if (!user || (user.role !== 'admin' && user.role !== 'system_admin') || !(await assertSchoolAccessForServerUser(user, schoolId))) {
     redirect('/');
   }
 

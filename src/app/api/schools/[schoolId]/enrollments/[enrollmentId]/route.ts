@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 import { z } from 'zod';
-import { requireAuth, requireRole, AuthUser, UserRole } from '@/lib/auth';
+import { requireRole, requireSchoolAccess } from '@/lib/auth';
 
 // Zod schema for updating an enrollment (e.g., setting departure date)
 const enrollmentUpdateSchema = z.object({
@@ -19,13 +19,11 @@ export async function PATCH(
     return NextResponse.json({ error: 'School ID and Enrollment ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only manage enrollments for their own school.' }, { status: 403 });
-  }
 
   try {
     const body = await request.json();
@@ -37,10 +35,16 @@ export async function PATCH(
 
     // Verify the enrollment record exists and belongs to the specified school
     const existingEnrollment = await prisma.studentEnrollmentHistory.findUnique({
-      where: { id: enrollmentId, schoolId: schoolId },
+      where: { id: enrollmentId },
+      include: {
+        class: { select: { schoolId: true } },
+      },
     });
 
     if (!existingEnrollment) {
+      return NextResponse.json({ error: 'Enrollment record not found for this school' }, { status: 404 });
+    }
+    if (existingEnrollment.class.schoolId !== schoolId) {
       return NextResponse.json({ error: 'Enrollment record not found for this school' }, { status: 404 });
     }
 

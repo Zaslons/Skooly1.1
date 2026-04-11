@@ -42,7 +42,9 @@ const LoginPage = () => {
 
       let targetUrl = "";
 
-      if (role === 'system_admin') {
+      if (data.needsSchoolSelection) {
+        targetUrl = "/select-school";
+      } else if (role === 'system_admin') {
         targetUrl = '/system/plans';
       } else if (schoolId) {
         switch (role) {

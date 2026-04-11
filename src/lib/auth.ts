@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from './prisma';
+import { findActiveMembership } from './schoolAccess';
 import bcrypt from 'bcryptjs';
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { cookies } from 'next/headers';
@@ -73,16 +74,82 @@ async function getProfileId(authId: string, role: string, schoolId?: string): Pr
       where: { authId, ...(schoolId ? { schoolId } : {}) },
       select: { id: true },
     });
-    return profile?.id;
+    return profile?.id ?? (await prisma.teacher.findFirst({ where: { authId }, select: { id: true } }))?.id;
   }
   if (role === 'student') {
     const profile = await prisma.student.findFirst({
       where: { authId, ...(schoolId ? { schoolId } : {}) },
       select: { id: true },
     });
-    return profile?.id;
+    return profile?.id ?? (await prisma.student.findFirst({ where: { authId }, select: { id: true } }))?.id;
+  }
+  if (role === 'admin') {
+    return (await prisma.admin.findFirst({ where: { authId }, select: { id: true } }))?.id;
+  }
+  if (role === 'parent') {
+    return (await prisma.parent.findFirst({ where: { authId }, select: { id: true } }))?.id;
   }
   return undefined;
+}
+
+/** Create SchoolMembership rows from existing profile rows when none exist (upgrade / legacy). */
+async function ensureMembershipsFromProfiles(authId: string): Promise<void> {
+  const existing = await prisma.schoolMembership.count({ where: { authId } });
+  if (existing > 0) return;
+
+  const auth = await prisma.auth.findUnique({
+    where: { id: authId },
+    include: { admin: true, teacher: true, student: true, parent: true },
+  });
+  if (!auth) return;
+
+  try {
+    if (auth.admin) {
+      await prisma.schoolMembership.create({
+        data: {
+          authId,
+          schoolId: auth.admin.schoolId,
+          role: 'admin',
+          adminId: auth.admin.id,
+        },
+      });
+      return;
+    }
+    if (auth.teacher?.schoolId) {
+      await prisma.schoolMembership.create({
+        data: {
+          authId,
+          schoolId: auth.teacher.schoolId,
+          role: 'teacher',
+          teacherId: auth.teacher.id,
+        },
+      });
+      return;
+    }
+    if (auth.student) {
+      await prisma.schoolMembership.create({
+        data: {
+          authId,
+          schoolId: auth.student.schoolId,
+          role: 'student',
+          studentId: auth.student.id,
+        },
+      });
+      return;
+    }
+    if (auth.parent?.schoolId) {
+      await prisma.schoolMembership.create({
+        data: {
+          authId,
+          schoolId: auth.parent.schoolId,
+          role: 'parent',
+          parentId: auth.parent.id,
+        },
+      });
+    }
+  } catch {
+    // Unique / partial-index races: ignore; login will retry with findMany
+  }
 }
 
 export type AuthenticateResult = {
@@ -115,6 +182,10 @@ export async function authenticateUser(identifier: string, password: string): Pr
 
   const isValid = await comparePasswords(password, authRecord.password);
   if (!isValid) return null;
+
+  if (authRecord.role !== 'system_admin') {
+    await ensureMembershipsFromProfiles(authRecord.id);
+  }
 
   const memberships = await prisma.schoolMembership.findMany({
     where: { authId: authRecord.id, isActive: true },
@@ -162,35 +233,7 @@ export async function authenticateUser(identifier: string, password: string): Pr
   }
 
   if (memberships.length === 0) {
-    const role = (authRecord.role as UserRole) || 'admin';
-    const schoolId = authRecord.schoolId || undefined;
-    const profileId = await getProfileId(authRecord.id, role, schoolId);
-
-    const tokenPayload: AuthUser = {
-      id: authRecord.id,
-      username: authRecord.username,
-      email: authRecord.email || undefined,
-      role,
-      schoolId,
-      profileId,
-      accountType: authRecord.accountType,
-    };
-
-    const token = await generateToken(tokenPayload);
-    return {
-      user: {
-        id: authRecord.id,
-        username: authRecord.username,
-        email: authRecord.email || undefined,
-        role,
-        schoolId,
-        accountType: authRecord.accountType,
-        memberships: membershipInfos,
-      },
-      token,
-      needsSchoolSelection: false,
-      memberships: membershipInfos,
-    };
+    return null;
   }
 
   if (memberships.length === 1) {
@@ -337,7 +380,8 @@ export async function requireSchoolAccess(req: NextRequest, schoolIdParam: strin
     return user;
   }
 
-  if (user.schoolId !== schoolIdParam) {
+  const membership = await findActiveMembership(user.id, schoolIdParam, user.role);
+  if (!membership) {
     return NextResponse.json({ error: 'Access denied for this school' }, { status: 403 });
   }
   return user;

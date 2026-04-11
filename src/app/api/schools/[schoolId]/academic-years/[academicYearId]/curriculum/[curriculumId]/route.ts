@@ -1,14 +1,27 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 import { z } from 'zod';
-import { requireAuth, requireRole, AuthUser, UserRole } from '@/lib/auth';
+import { requireRole, requireSchoolAccess } from '@/lib/auth';
 
-// Zod schema for validating the request body when updating a Curriculum entry
+// Zod schema for validating the request body when updating a Curriculum entry.
+// Legacy `textbook`: only null/empty allowed; non-empty rejected (use CurriculumBook).
 const curriculumUpdateSchema = z.object({
   description: z.string().optional(),
-  textbook: z.string().optional(),
-  // gradeId, subjectId, academicYearId, schoolId are not typically updatable for a curriculum entry.
-  // If a subject needs to be changed for a grade/year, it's usually by deleting the old entry and creating a new one.
+  textbook: z.preprocess(
+    (v) => {
+      if (v === undefined) return undefined;
+      if (v === null) return null;
+      if (typeof v === 'string' && v.trim() === '') return null;
+      return v;
+    },
+    z.union([z.string(), z.null()]).optional()
+  ).superRefine((val, ctx) => {
+    if (val === undefined || val === null) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'The legacy textbook field cannot be set to new text. Use Curriculum books instead.',
+    });
+  }),
 });
 
 // GET handler for a specific curriculum entry
@@ -21,13 +34,11 @@ export async function GET(
     return NextResponse.json({ error: 'School ID, Academic Year ID, and Curriculum ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only view their school\'s curriculum.' }, { status: 403 });
-  }
 
   try {
     const curriculumEntry = await prisma.curriculum.findUnique({
@@ -63,13 +74,11 @@ export async function PATCH(
     return NextResponse.json({ error: 'School ID, Academic Year ID, and Curriculum ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only update their school\'s curriculum.' }, { status: 403 });
-  }
 
   try {
     const body = await request.json();
@@ -78,6 +87,14 @@ export async function PATCH(
       return NextResponse.json({ error: 'Invalid input', details: validation.error.flatten().fieldErrors }, { status: 400 });
     }
     const { description, textbook } = validation.data;
+
+    const patchData: { description?: string; textbook?: string | null } = {};
+    if (typeof description !== 'undefined') patchData.description = description;
+    if (typeof textbook !== 'undefined') patchData.textbook = textbook ?? null;
+
+    if (Object.keys(patchData).length === 0) {
+      return NextResponse.json({ error: 'No updatable fields provided' }, { status: 400 });
+    }
 
     // Ensure the curriculum entry exists and belongs to the specified school and academic year before updating
     const existingEntry = await prisma.curriculum.findUnique({
@@ -92,10 +109,7 @@ export async function PATCH(
         id: curriculumId,
         // No need to re-check schoolId and academicYearId here as findUnique above confirmed it.
       },
-      data: {
-        description: description,
-        textbook: textbook,
-      },
+      data: patchData,
       include: {
         grade: { select: { id: true, level: true } },
         subject: { select: { id: true, name: true } },
@@ -123,13 +137,11 @@ export async function DELETE(
     return NextResponse.json({ error: 'School ID, Academic Year ID, and Curriculum ID are required' }, { status: 400 });
   }
 
-  // Authentication & Authorization: Admin of this school
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only delete their school\'s curriculum.' }, { status: 403 });
-  }
 
   try {
     // Ensure the curriculum entry exists and belongs to the specified school and academic year before deleting

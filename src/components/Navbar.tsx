@@ -15,8 +15,11 @@ const Navbar = () => {
   const router = useRouter(); // Initialize useRouter
   const [schoolName, setSchoolName] = useState<string | null>("Loading...");
   const [activeYearName, setActiveYearName] = useState<string | null>(""); // State for active academic year name
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authUser, setAuthUser] = useState<
+    (AuthUser & { memberships?: { schoolId: string; schoolName: string; role: string }[] }) | null
+  >(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [currentDateText, setCurrentDateText] = useState("");
 
   const schoolId = Array.isArray(schoolIdParam) ? schoolIdParam[0] : schoolIdParam;
 
@@ -67,6 +70,14 @@ const Navbar = () => {
     };
 
     fetchCurrentUser();
+    setCurrentDateText(
+      new Date().toLocaleDateString(undefined, {
+        weekday: "short",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    );
   }, [schoolId, router]); // Added router to dependency array
 
   const handleSignOut = () => {
@@ -88,10 +99,15 @@ const Navbar = () => {
       {/* LEFT: School Name */}
       <div className="flex-1 text-left">
         {schoolName && (
-            <span className="font-semibold text-lg text-gray-700">
+            <span className="font-semibold text-lg text-gray-700 block">
               {schoolName}
               {activeYearName && activeYearName !== "No active year set" && activeYearName !== "Error fetching year" && (
                 <span className="text-sm text-gray-500 ml-2">({activeYearName})</span>
+              )}
+              {authUser?.memberships && authUser.memberships.length > 1 && authUser.role && (
+                <span className="block text-xs font-normal text-gray-500 mt-1">
+                  Viewing as {authUser.role} · switch school from the sidebar
+                </span>
               )}
             </span>
         )}
@@ -103,6 +119,9 @@ const Navbar = () => {
             <Image src="/logo.png" alt="logo" width={32} height={32} />
             <span className="font-bold text-xl">Skooly</span>
         </Link>
+        {currentDateText && (
+          <div className="text-xs text-gray-500 mt-1">{currentDateText}</div>
+        )}
       </div>
 
       {/* RIGHT: Icons and User */}

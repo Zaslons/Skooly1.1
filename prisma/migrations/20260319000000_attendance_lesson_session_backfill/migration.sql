@@ -1,0 +1,2 @@
+-- Placeholder migration restored to fix local migration history consistency.
+-- No-op intentionally.

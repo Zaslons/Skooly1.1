@@ -8,6 +8,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ITEM_PER_PAGE } from "@/lib/settings";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser, teacherWhereInSchool } from "@/lib/schoolAccess";
 import { redirect } from 'next/navigation';
 
 type TeacherList = Teacher & { subjects: Subject[] } & { classes: Class[] };
@@ -27,7 +28,7 @@ const TeacherListPage = async ({
 
   const { schoolId: routeSchoolId } = params;
 
-  if (authUser.schoolId !== routeSchoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, routeSchoolId))) {
     return (
       <div className="bg-white p-4 rounded-md flex-1 m-4 mt-0">
         <h1 className="text-xl font-semibold text-red-600">Access Denied</h1>
@@ -136,12 +137,8 @@ const TeacherListPage = async ({
   const p = page ? parseInt(page) : 1;
 
   const query: Prisma.TeacherWhereInput = {
-    schoolId: routeSchoolId,
+    AND: [teacherWhereInSchool(routeSchoolId)],
   };
-
-  if (!query.AND) {
-    query.AND = [];
-  }
 
   if (queryParams) {
     for (const [key, value] of Object.entries(queryParams)) {

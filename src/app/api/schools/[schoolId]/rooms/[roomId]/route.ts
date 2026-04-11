@@ -1,7 +1,7 @@
 import prisma from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
 import { z } from "zod";
-import { getVerifiedAuthUser } from "@/lib/actions";
+import { requireSchoolAccess } from "@/lib/auth";
 
 // Schema for validating the request body when creating/updating a room
 // (Same as in the other route file, could be shared from a common location)
@@ -28,14 +28,8 @@ export async function GET(
   { params }: { params: { schoolId: string; roomId: string } }
 ) {
   try {
-    const authUser = await getVerifiedAuthUser();
-    if (!authUser) {
-      return NextResponse.json({ error: "User not authenticated" }, { status: 401 });
-    }
-
-    if (authUser.schoolId !== params.schoolId && authUser.role !== 'system_admin') {
-        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const accessOrResponse = await requireSchoolAccess(request, params.schoolId);
+    if (accessOrResponse instanceof NextResponse) return accessOrResponse;
 
     const roomIdInt = parseInt(params.roomId, 10);
     if (isNaN(roomIdInt)) {
@@ -60,13 +54,12 @@ export async function PUT(
   { params }: { params: { schoolId: string; roomId: string } }
 ) {
   try {
-    const authUser = await getVerifiedAuthUser();
-    if (!authUser) {
-      return NextResponse.json({ error: "User not authenticated" }, { status: 401 });
-    }
+    const accessOrResponse = await requireSchoolAccess(request, params.schoolId);
+    if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+    const authUser = accessOrResponse;
 
-    if (authUser.role !== 'system_admin' && (authUser.role !== 'admin' || authUser.schoolId !== params.schoolId)) {
-        return NextResponse.json({ error: "Forbidden: Insufficient privileges" }, { status: 403 });
+    if (authUser.role !== 'system_admin' && authUser.role !== 'admin') {
+      return NextResponse.json({ error: "Forbidden: Insufficient privileges" }, { status: 403 });
     }
 
     const roomIdInt = parseInt(params.roomId, 10);
@@ -131,13 +124,12 @@ export async function DELETE(
   { params }: { params: { schoolId: string; roomId: string } }
 ) {
   try {
-    const authUser = await getVerifiedAuthUser();
-    if (!authUser) {
-      return NextResponse.json({ error: "User not authenticated" }, { status: 401 });
-    }
+    const accessOrResponse = await requireSchoolAccess(request, params.schoolId);
+    if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+    const authUser = accessOrResponse;
 
-    if (authUser.role !== 'system_admin' && (authUser.role !== 'admin' || authUser.schoolId !== params.schoolId)) {
-        return NextResponse.json({ error: "Forbidden: Insufficient privileges" }, { status: 403 });
+    if (authUser.role !== 'system_admin' && authUser.role !== 'admin') {
+      return NextResponse.json({ error: "Forbidden: Insufficient privileges" }, { status: 403 });
     }
 
     const roomIdInt = parseInt(params.roomId, 10);

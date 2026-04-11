@@ -60,19 +60,32 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'The target class is full.' }, { status: 400 });
     }
 
-    const parentProfile = await prisma.parent.findFirst({
-      where: { authId: user.id, schoolId: joinCode.schoolId },
+    const parentProfile = await prisma.parent.findUnique({
+      where: { authId: user.id },
       select: { id: true },
     });
 
     if (!parentProfile) {
-      return NextResponse.json({ error: 'Parent profile not found for this school.' }, { status: 400 });
+      return NextResponse.json({ error: 'Parent profile not found.' }, { status: 400 });
     }
 
     const studentUsername = `${studentData.name.toLowerCase()}.${studentData.surname.toLowerCase()}.${Date.now().toString(36)}`;
     const studentPassword = await hashPassword(studentUsername);
 
     await prisma.$transaction(async (tx) => {
+      const existingMembership = await tx.schoolMembership.findFirst({
+        where: { authId: user.id, schoolId: joinCode.schoolId, role: 'parent' },
+      });
+      if (!existingMembership) {
+        await tx.schoolMembership.create({
+          data: {
+            authId: user.id,
+            schoolId: joinCode.schoolId,
+            role: 'parent',
+            parentId: parentProfile.id,
+          },
+        });
+      }
       const studentAuth = await tx.auth.create({
         data: {
           email: null,

@@ -6,7 +6,9 @@ import prisma from "@/lib/prisma";
 import { ITEM_PER_PAGE } from "@/lib/settings";
 import { Class, Lesson, Prisma, Subject, Teacher } from "@prisma/client";
 import Image from "next/image";
+import Link from "next/link";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 type LessonList = Lesson & { subject: Subject } & { class: Class } & {
   teacher: Teacher;
@@ -27,7 +29,7 @@ const LessonListPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -198,6 +200,7 @@ const renderRow = (item: LessonList) => (
         subject: { select: { name: true, id: true } },
         class: { select: { name: true, id: true } },
         teacher: { select: { name: true, surname: true, id: true } },
+        period: { select: { id: true, name: true } },
       },
       take: ITEM_PER_PAGE,
       skip: ITEM_PER_PAGE * (p - 1),
@@ -208,8 +211,18 @@ const renderRow = (item: LessonList) => (
   return (
     <div className="bg-white p-4 rounded-md flex-1 m-4 mt-0">
       {/* TOP */}
-      <div className="flex items-center justify-between">
-        <h1 className="hidden md:block text-lg font-semibold">All Lessons</h1>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">Weekly lesson templates</h1>
+          <p className="text-sm text-gray-600 mt-1 max-w-2xl">
+            Each row is a repeating weekly pattern (subject, class, day, time). The calendar and period grid use{" "}
+            <span className="font-medium text-gray-800">lesson sessions</span> per term—admins generate them from{" "}
+            <Link href={`/schools/${schoolId}/admin/schedule`} className="text-indigo-700 underline font-medium">
+              Admin schedule
+            </Link>
+            .
+          </p>
+        </div>
         <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
           <TableSearch />
           <div className="flex items-center gap-4 self-end">

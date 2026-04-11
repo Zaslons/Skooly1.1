@@ -31,7 +31,7 @@ interface RowFormModalTriggerProps {
   buttonText?: string;
   buttonIcon?: string; // Path to icon image
   buttonClassName?: string;
-  // Add any other props FormModal might need directly or via relatedData if not covered
+  relatedData?: Record<string, unknown>;
 }
 
 const RowFormModalTrigger: React.FC<RowFormModalTriggerProps> = ({
@@ -43,6 +43,7 @@ const RowFormModalTrigger: React.FC<RowFormModalTriggerProps> = ({
   buttonText,
   buttonIcon,
   buttonClassName,
+  relatedData: relatedDataProp,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -66,7 +67,7 @@ const RowFormModalTrigger: React.FC<RowFormModalTriggerProps> = ({
           type={type}
           data={itemData} // Pass itemData for update
           id={itemId}     // Pass itemId for delete
-          relatedData={{ authUser }} // Pass authUser here
+          relatedData={{ authUser, ...(relatedDataProp ?? {}) }}
           isOpen={isOpen}
           onClose={handleClose}
           // Pass other props if FormModal expects them directly

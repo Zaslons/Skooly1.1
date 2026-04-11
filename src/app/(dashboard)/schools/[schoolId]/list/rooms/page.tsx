@@ -6,7 +6,8 @@ import prisma from "@/lib/prisma";
 import { ITEM_PER_PAGE } from "@/lib/settings";
 import { Room, Prisma } from "@prisma/client"; // Room type from Prisma
 import Image from "next/image";
-import { getVerifiedAuthUser } from "@/lib/actions"; // Assuming this is the correct path
+import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 // Define the type for items in our list, directly using Prisma's Room for now.
 type RoomListItem = Room;
@@ -26,8 +27,7 @@ const RoomListPage = async ({
     return <div>User not authenticated. Please log in.</div>;
   }
 
-  // Authorization: User must belong to the school or be a system_admin
-  if (authUser.schoolId !== schoolId && authUser.role !== 'system_admin') {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized to view rooms for this school.</div>;
   }
 

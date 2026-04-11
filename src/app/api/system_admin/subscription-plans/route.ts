@@ -11,6 +11,7 @@ const planSchema = z.object({
   price: z.number().min(0, "Price must be non-negative"), // Prisma Decimal maps to number in JS
   currency: z.string().min(2, "Currency code is required"),
   billingCycle: z.nativeEnum(BillingCycle),
+  stripePriceId: z.string().min(1, "Stripe price ID is required").optional(),
   features: z.array(z.string()).optional().default([]),
   maxStudents: z.number().int().positive().optional().nullable(),
   maxTeachers: z.number().int().positive().optional().nullable(),
@@ -32,8 +33,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "Invalid plan data", errors: validation.error.errors }, { status: 400 });
     }
 
+    const stripePriceId =
+      validation.data.stripePriceId ??
+      `price_${validation.data.name.toLowerCase().replace(/\s+/g, "_")}_${validation.data.billingCycle.toLowerCase()}`;
+
     const newPlan = await prisma.subscriptionPlan.create({
-      data: validation.data,
+      data: {
+        ...validation.data,
+        stripePriceId,
+      },
     });
     return NextResponse.json(newPlan, { status: 201 });
   } catch (error: any) {

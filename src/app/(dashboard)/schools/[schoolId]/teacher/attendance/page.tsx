@@ -2,6 +2,7 @@ import { getTeacherLessons } from "@/lib/data";
 import Link from "next/link";
 import { CalendarClock } from "lucide-react";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 export default async function TeacherAttendancePage({ 
     params
@@ -15,7 +16,7 @@ export default async function TeacherAttendancePage({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 

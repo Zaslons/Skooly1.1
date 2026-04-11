@@ -1,8 +1,9 @@
 import Announcements from "@/components/Announcements";
-import BigCalendarContainer from "@/components/BigCalendarContainer";
+import ReadonlyPeriodGridContainer from "@/components/scheduling/period-grid/ReadonlyPeriodGridContainer";
 import EventCalendar from "@/components/EventCalendar";
 import prisma from "@/lib/prisma";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { getStudentAcademicSummary } from "@/lib/gradeCalculation";
 
 const StudentPage = async ({
@@ -17,7 +18,7 @@ const StudentPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -42,6 +43,11 @@ const StudentPage = async ({
   const summary = activeAY
     ? await getStudentAcademicSummary(student.id, activeAY.id, schoolId)
     : null;
+  const periods = await prisma.period.findMany({
+    where: { schoolId, isArchived: false },
+    select: { id: true, name: true, order: true, startTime: true, endTime: true },
+    orderBy: [{ order: "asc" }, { name: "asc" }],
+  });
 
   return (
     <div className="p-4 flex gap-4 flex-col xl:flex-row">
@@ -120,10 +126,11 @@ const StudentPage = async ({
 
         <div className="bg-white p-4 rounded-md">
           <h1 className="text-xl font-semibold">Schedule ({student.name} {student.surname})</h1>
-          <BigCalendarContainer
-            type="classId"
+          <ReadonlyPeriodGridContainer
+            scope="classId"
             id={student.classId}
             schoolId={schoolId}
+            periods={periods}
           />
         </div>
       </div>

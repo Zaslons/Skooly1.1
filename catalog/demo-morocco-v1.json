@@ -1,0 +1,30 @@
+{
+  "id": "demo-morocco-v1",
+  "version": "1.0.0",
+  "country": "MA",
+  "teachingSystem": "national_morocco",
+  "gradeLabels": ["Cycle1 · Year1", "Cycle1 · Year2", "Cycle1 · Year3"],
+  "lines": [
+    {
+      "subjectCode": "MATH",
+      "subjectNameDefault": "Mathematics",
+      "gradeIndices": [0, 1, 2],
+      "coefficient": 3,
+      "periodsPerWeek": 4
+    },
+    {
+      "subjectCode": "AR",
+      "subjectNameDefault": "Arabic",
+      "gradeIndices": [0, 1, 2],
+      "coefficient": 2,
+      "periodsPerWeek": 4
+    },
+    {
+      "subjectCode": "SCI",
+      "subjectNameDefault": "Science",
+      "gradeIndices": [1, 2],
+      "coefficient": 2,
+      "periodsPerWeek": 3
+    }
+  ]
+}

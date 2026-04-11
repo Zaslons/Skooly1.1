@@ -11,46 +11,44 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import dayGridPlugin from '@fullcalendar/daygrid'; // Needed for basic rendering?
 import interactionPlugin from '@fullcalendar/interaction'; // Needed for future interactions
 // Import interaction types - Attempt to import EventResizeDoneArg from @fullcalendar/interaction
-import { DateSelectArg, EventClickArg, EventDropArg } from '@fullcalendar/core'; 
+import { DateSelectArg, EventClickArg, EventDropArg, DatesSetArg } from '@fullcalendar/core'; 
 import { EventResizeDoneArg } from '@fullcalendar/interaction'; // Changed from @fullcalendar/core
 import { Day as PrismaDay } from '@prisma/client'; // Import PrismaDay
 
-// Define the event type expected by FullCalendar (can reuse our previous richer type)
-// This type should match the one in AdminScheduleClient.tsx
-type ScheduleEvent = {
+/** FullCalendar event shape shared with schedule UIs (E5 instances + legacy templates). */
+export type ScheduleEvent = {
   id?: string;
-  title?: string; 
-  start?: Date;   
-  end?: Date;     
+  title?: string;
+  start?: Date;
+  end?: Date;
   daysOfWeek?: number[];
-  startTime?: string; 
-  endTime?: string;   
-  display?: 'background' | 'auto' | 'inverse-background'; 
-  color?: string; 
+  startTime?: string;
+  endTime?: string;
+  display?: 'background' | 'auto' | 'inverse-background';
+  color?: string;
+  /** E5: from CalendarInstanceEventDTO */
+  backgroundColor?: string;
+  borderColor?: string;
+  textColor?: string;
   extendedProps: {
-    // Lesson specific
     lessonId?: number;
     subject?: string;
-    className?: string; 
+    className?: string;
     teacher?: string;
     subjectId?: number;
     classId?: number;
-    teacherId?: string; 
-    originalDay?: PrismaDay; 
-
-    // Availability specific
+    teacherId?: string;
+    originalDay?: PrismaDay;
     type?: 'availability';
     isAvailable?: boolean;
     notes?: string | null;
-
-    // General extendedProps from original BigCalender.tsx definition
-    // Ensure these don't conflict or are handled correctly if AdminScheduleClient adds them
-    // For example, if AdminScheduleClient.tsx sends subject, className, teacher in extendedProps
-    // they are already covered above.
+    kind?: 'lesson_session' | 'exam' | 'overlay' | 'availability';
+    /** DTO fields (lessonSessionId, examId, overlayType, …) — allow any extra keys */
+    [key: string]: unknown;
   };
-  editable?: boolean; 
-  eventStartEditable?: boolean; 
-  eventDurationEditable?: boolean; 
+  editable?: boolean;
+  eventStartEditable?: boolean;
+  eventDurationEditable?: boolean;
 };
 
 // Remove react-big-calendar specific helpers
@@ -74,50 +72,64 @@ const stringToColor = (str: string): string => {
   return color;
 };
 
-// Function to generate CSS class names and basic inline styles for events
-const getEventStyling = (arg: any) => { // arg type can be refined using FullCalendar types like EventClassNamesGeneratorArg
-  const subject = arg.event.extendedProps.subject || 'default'; // Ensure extendedProps.subject exists or handle safely
+// E5: color by kind; legacy template lessons use subject hash color
+const getEventStyling = (arg: any) => {
+  if (arg.event.backgroundColor) {
+    return [];
+  }
+  const kind = arg.event.extendedProps?.kind as string | undefined;
+  if (kind === 'lesson_session') return ['fc-e5-lesson-session'];
+  if (kind === 'exam') return ['fc-e5-exam'];
+  if (kind === 'overlay') return ['fc-e5-overlay'];
+  const subject = arg.event.extendedProps.subject || 'default';
   const color = stringToColor(subject);
   const className = `subject-${subject.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`;
-
-  // **IMPORTANT**: Inline styles are used here for simplicity.
-  // Move these styles to a CSS file targeting the generated className for production.
   const style = `
     .${className} .fc-event-main {
-      background-color: ${color} !important; 
+      background-color: ${color} !important;
       border-color: ${color} !important;
-      color: black !important; /* Ensure text readability */ 
-    }
-    /* Optional: Style the time part differently */
-    .${className} .fc-event-time {
-        /* font-weight: bold; */
+      color: black !important;
     }
   `;
-
-  // Inject style tag - This is a HACK for demonstration, use CSS files instead.
   if (typeof window !== 'undefined' && !document.getElementById(className + '-style')) {
     const styleEl = document.createElement('style');
     styleEl.id = className + '-style';
     styleEl.innerHTML = style;
     document.head.appendChild(styleEl);
   }
-
-  return [className]; // Return the generated class name
+  return [className];
 };
 
 // Function to render the inner content of an event
-const renderEventContent = (eventInfo: any) => { // Use EventContentArg from FullCalendar for better typing
+const renderEventContent = (eventInfo: any) => {
+  const ep = eventInfo.event.extendedProps || {};
+  const sub =
+    ep.kind === 'lesson_session'
+      ? ep.effectiveTeacherName || ep.teacherName
+      : ep.teacher;
+  const badges: string[] = [];
+  if (ep.kind === 'lesson_session' && Array.isArray(ep.popQuizzes) && ep.popQuizzes.length > 0) {
+    for (const pq of ep.popQuizzes as { durationMinutes?: number; title?: string }[]) {
+      const mins = pq.durationMinutes ?? '—';
+      badges.push(`Quiz: ${mins} mins`);
+    }
+  }
+  if (ep.kind === 'lesson_session' && Array.isArray(ep.assignmentDue) && ep.assignmentDue.length > 0) {
+    badges.push('Assignment due');
+  }
   return (
-    <div className="fc-event-main-frame p-1"> {/* Add some padding maybe */}
+    <div className="fc-event-main-frame p-1">
       <div className="fc-event-title-container">
-        <div className="fc-event-title fc-sticky" style={{ whiteSpace: 'normal' }}> {/* Allow wrapping */} 
-          {eventInfo.event.title || ''} {/* Handle optional title */} 
+        <div className="fc-event-title fc-sticky" style={{ whiteSpace: 'normal' }}>
+          {eventInfo.event.title || ''}
         </div>
       </div>
-      {/* Display Teacher Name */}
-      <div className="fc-event-teacher text-xs opacity-90 mt-1"> {/* Style as needed */} 
-         {eventInfo.event.extendedProps.teacher} {/* Use teacher from extendedProps if defined */}
-      </div>
+      {sub && (
+        <div className="fc-event-teacher text-xs opacity-90 mt-1">{String(sub)}</div>
+      )}
+      {badges.length > 0 && (
+        <div className="text-[10px] mt-0.5 font-medium text-white/90">{badges.join(' · ')}</div>
+      )}
     </div>
   );
 };
@@ -129,7 +141,8 @@ const BigCalendar = ({
   select, // Callback for date selection
   eventClick, // Callback for event click
   eventDrop, // Callback for drag & drop
-  eventResize // Callback for resize
+  eventResize, // Callback for resize
+  datesSet,
 }: {
   data: ScheduleEvent[];
   editable?: boolean;
@@ -138,6 +151,7 @@ const BigCalendar = ({
   eventClick?: (clickInfo: EventClickArg) => void;
   eventDrop?: (dropInfo: EventDropArg) => void;
   eventResize?: (resizeInfo: EventResizeDoneArg) => void;
+  datesSet?: (arg: DatesSetArg) => void;
 }) => {
   // Remove react-big-calendar state and handlers
   // const [view, setView] = useState<View>(Views.WORK_WEEK);
@@ -170,6 +184,7 @@ const BigCalendar = ({
       eventClick={eventClick} // Pass through eventClick
       eventDrop={eventDrop}
       eventResize={eventResize}
+      datesSet={datesSet}
       selectMirror={true} // Shows a placeholder while selecting
       dayMaxEvents={true} // Allow "+more" link when too many events
       // Use the eventContent prop with our custom rendering function

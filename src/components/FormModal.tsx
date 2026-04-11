@@ -152,12 +152,13 @@ const forms: {
     />
   ),
   // New form mappings
-  lesson: (onClose, type, data, relatedData) => (
+  lesson: (onClose, type, data, relatedData, authUser) => (
     <LessonForm
       type={type}
       data={data}
       onClose={onClose}
       relatedData={relatedData}
+      authUser={authUser}
     />
   ),
   assignment: (onClose, type, data, relatedData) => (

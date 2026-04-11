@@ -1,5 +1,6 @@
 import prisma from '@/lib/prisma';
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 import { redirect } from 'next/navigation';
 import EnrollmentsClient from './EnrollmentsClient'; // To be created
 import { AcademicYear, Class, Student, StudentEnrollmentHistory } from '@prisma/client';
@@ -67,9 +68,8 @@ export default async function EnrollmentsPage({ params }: EnrollmentsPageProps) 
     );
   }
 
-  // Authorization
   let authorized = false;
-  if (currentUser.schoolId === schoolId) {
+  if (await assertSchoolAccessForServerUser(currentUser, schoolId)) {
     if (currentUser.role === 'admin') {
       authorized = true;
     } else if (currentUser.role === 'teacher') {

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import prisma from '@/lib/prisma';
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 // import { Badge } from '@/components/ui/badge'; // Temporarily removed
 // import { Button as ShadButton } from '@/components/ui/button'; // Temporarily removed
 
@@ -19,10 +20,8 @@ export default async function ClassesForAcademicYearPage({ params }: ClassesForA
   if (!user) {
     redirect('/sign-in');
   }
-  if (user.role !== 'admin' || user.schoolId !== schoolId) {
-    // Or a more specific unauthorized page
-    // For now, redirect to a generic unauthorized or home page for their role
-    redirect(user.schoolId ? `/schools/${user.schoolId}/${user.role}` : '/'); 
+  if (user.role !== 'admin' || !(await assertSchoolAccessForServerUser(user, schoolId))) {
+    redirect(user.schoolId ? `/schools/${user.schoolId}/${user.role}` : '/');
   }
 
   const academicYear = await prisma.academicYear.findUnique({

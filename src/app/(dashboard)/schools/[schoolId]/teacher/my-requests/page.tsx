@@ -1,4 +1,5 @@
 import { getVerifiedAuthUser, getScheduleChangeRequestsForTeacher } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { redirect } from "next/navigation";
 import MyRequestsClient from "./MyRequestsClient";
 import { ScheduleChangeRequest, Lesson, Teacher, Subject, Class as PrismaClass, Day, RequestStatus, ScheduleChangeType } from "@prisma/client";
@@ -51,7 +52,7 @@ const MyRequestsPage = async ({ params }: { params: { schoolId: string } }) => {
   if (authUser.role !== 'teacher') {
     return <div className="p-4">Access Denied: This page is for teachers only.</div>;
   }
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div className="p-4">Access Denied: You are not authorized for this school.</div>;
   }
   if (!authUser.profileId) {

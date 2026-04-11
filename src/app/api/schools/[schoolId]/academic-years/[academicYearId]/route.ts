@@ -2,6 +2,14 @@ import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma'; // Assuming prisma client is in lib
 import { z } from 'zod';
 import { requireAuth, requireRole, requireSchoolAccess, AuthUser, UserRole } from '@/lib/auth'; // Adjusted import path
+import {
+  assertNoAcademicYearOverlap,
+  assertStartBeforeEnd,
+  findAcademicYearForSchool,
+  setSingleActiveAcademicYear,
+  TemporalRuleError,
+  toDate,
+} from '@/lib/domain/temporalRules';
 
 // Zod schema for validating the request body when updating an Academic Year
 // All fields are optional for PATCH requests
@@ -71,14 +79,11 @@ export async function PATCH(
     return NextResponse.json({ error: 'School ID and Academic Year ID are required' }, { status: 400 });
   }
 
-  // Authentication and Authorization: Only 'admin' of this school can update
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only update academic years for their own school.' }, { status: 403 });
-  }
 
   try {
     // TODO: Add authentication and authorization here
@@ -93,60 +98,60 @@ export async function PATCH(
 
     const { name, startDate, endDate, isActive, isArchived } = validation.data;
     
-    const existingAcademicYear = await prisma.academicYear.findUnique({
-      where: { id: academicYearId, schoolId: schoolId }
-    });
+    const existingAcademicYear = await findAcademicYearForSchool(academicYearId, schoolId);
 
     if (!existingAcademicYear) {
       return NextResponse.json({ error: 'Academic Year not found to update' }, { status: 404 });
     }
 
-    // If isActive is being set to true, ensure all other academic years for this school are set to isActive: false
-    // and update the school's activeAcademicYearId
-    if (isActive === true) {
-      await prisma.$transaction(async (tx) => {
-        await tx.academicYear.updateMany({
-          where: {
-            schoolId: schoolId,
-            id: { not: academicYearId }, 
-          },
-          data: {
-            isActive: false,
-          },
-        });
-        await tx.school.update({
-          where: { id: schoolId },
-          data: { activeAcademicYearId: academicYearId },
-        });
-      });
-    } else if (isActive === false) {
-      // If explicitly setting this year to inactive, check if it was the active one on the school model
-      const school = await prisma.school.findUnique({ where: { id: schoolId } });
-      if (school?.activeAcademicYearId === academicYearId) {
-        await prisma.school.update({
-          where: { id: schoolId },
-          data: { activeAcademicYearId: null }, // Set to null as this one is no longer active
-        });
-      }
-    }
+    const finalStartDate = startDate ? toDate(startDate) : existingAcademicYear.startDate;
+    const finalEndDate = endDate ? toDate(endDate) : existingAcademicYear.endDate;
 
-    const updatedAcademicYear = await prisma.academicYear.update({
-      where: {
-        id: academicYearId,
-        schoolId: schoolId, 
-      },
-      data: {
-        name,
-        startDate,
-        endDate,
-        isActive,
-        isArchived: isArchived !== undefined ? isArchived : existingAcademicYear.isArchived, // Preserve existing isArchived if not provided
-      },
+    assertStartBeforeEnd(finalStartDate, finalEndDate, 'academicYear');
+    await assertNoAcademicYearOverlap({
+      schoolId,
+      startDate: finalStartDate,
+      endDate: finalEndDate,
+      excludeId: academicYearId,
+    });
+
+    const updatedAcademicYear = await prisma.$transaction(async (tx) => {
+      if (isActive === true) {
+        await setSingleActiveAcademicYear({ tx, schoolId, academicYearId });
+      } else if (isActive === false) {
+        const school = await tx.school.findUnique({ where: { id: schoolId }, select: { activeAcademicYearId: true } });
+        if (school?.activeAcademicYearId === academicYearId) {
+          await tx.school.update({
+            where: { id: schoolId },
+            data: { activeAcademicYearId: null },
+          });
+        }
+      }
+
+      return tx.academicYear.update({
+        where: {
+          id: academicYearId,
+          schoolId: schoolId,
+        },
+        data: {
+          name,
+          startDate,
+          endDate,
+          isActive,
+          isArchived: isArchived !== undefined ? isArchived : existingAcademicYear.isArchived,
+        },
+      });
     });
 
     return NextResponse.json(updatedAcademicYear, { status: 200 });
   } catch (error: any) {
     console.error('[ACADEMIC_YEAR_PATCH]', error);
+    if (error instanceof TemporalRuleError) {
+      return NextResponse.json(
+        { code: error.code, error: error.message, fieldErrors: error.fieldErrors },
+        { status: 400 }
+      );
+    }
     if (error.code === 'P2002' && error.meta?.target?.includes('name')) {
       return NextResponse.json({ error: 'An academic year with this name already exists for this school.' }, { status: 409 });
     }
@@ -169,20 +174,17 @@ export async function DELETE(
     return NextResponse.json({ error: 'School ID and Academic Year ID are required' }, { status: 400 });
   }
 
-  // Authentication and Authorization: Only 'admin' of this school can archive
+  const accessOrResponse = await requireSchoolAccess(request, schoolId);
+  if (accessOrResponse instanceof NextResponse) return accessOrResponse;
+
   const userOrResponse = await requireRole(request, ['admin']);
   if (userOrResponse instanceof NextResponse) return userOrResponse;
-  const user: AuthUser = userOrResponse;
-
-  if (user.schoolId !== schoolId) {
-    return NextResponse.json({ error: 'Forbidden: Admin can only archive academic years for their own school.' }, { status: 403 });
-  }
 
   try {
     // TODO: Add authentication and authorization here
     // Ensure user has permission to archive this academic year for this school
 
-    const academicYearToArchive = await prisma.academicYear.findUnique({
+    const academicYearToArchive = await prisma.academicYear.findFirst({
         where: { id: academicYearId, schoolId: schoolId }
     });
 
@@ -194,26 +196,27 @@ export async function DELETE(
         return NextResponse.json({ error: 'Academic Year is already archived' }, { status: 400 });
     }
 
-    // Archive the academic year
-    const archivedAcademicYear = await prisma.academicYear.update({
-      where: {
-        id: academicYearId,
-        schoolId: schoolId,
-      },
-      data: {
-        isArchived: true,
-        isActive: false, // Always deactivate when archiving
-      },
-    });
+    const archivedAcademicYear = await prisma.$transaction(async (tx) => {
+      const updated = await tx.academicYear.update({
+        where: {
+          id: academicYearId,
+          schoolId: schoolId,
+        },
+        data: {
+          isArchived: true,
+          isActive: false,
+        },
+      });
 
-    // If this academic year was the active one for the school, clear it
-    const school = await prisma.school.findUnique({ where: { id: schoolId }});
-    if (school?.activeAcademicYearId === academicYearId) {
-        await prisma.school.update({
-            where: { id: schoolId },
-            data: { activeAcademicYearId: null }
+      const school = await tx.school.findUnique({ where: { id: schoolId }, select: { activeAcademicYearId: true } });
+      if (school?.activeAcademicYearId === academicYearId) {
+        await tx.school.update({
+          where: { id: schoolId },
+          data: { activeAcademicYearId: null },
         });
-    }
+      }
+      return updated;
+    });
 
     return NextResponse.json(archivedAcademicYear, { status: 200 });
   } catch (error: any) {

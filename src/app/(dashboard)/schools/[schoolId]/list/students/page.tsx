@@ -11,6 +11,7 @@ import Link from "next/link";
 
 // import { auth } from "@clerk/nextjs/server"; // Removed Clerk
 import { getVerifiedAuthUser } from "@/lib/actions"; // Added custom auth
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import { redirect } from "next/navigation"; // Added redirect
 
 type StudentList = Student & {
@@ -36,7 +37,7 @@ const StudentListPage = async ({
     redirect('/sign-in?message=Please sign in to view this page.');
   }
 
-  if (authUser.schoolId !== routeSchoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, routeSchoolId))) {
     return (
       <div className="bg-white p-4 rounded-md flex-1 m-4 mt-0">
         <h1 className="text-xl font-semibold text-red-600">Access Denied</h1>

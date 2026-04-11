@@ -8,14 +8,22 @@ export default function SelectSchoolPage() {
   const router = useRouter();
   const [memberships, setMemberships] = useState<MembershipInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     async function fetchMemberships() {
+      setLoading(true);
+      setLoadError(null);
       try {
         const res = await fetch("/api/auth/me");
         if (!res.ok) {
-          router.push("/sign-in");
+          if (res.status === 401) {
+            router.push("/sign-in");
+            return;
+          }
+          if (!cancelled) setLoadError("Could not load your schools. Try again.");
           return;
         }
         const data = await res.json();
@@ -23,14 +31,17 @@ export default function SelectSchoolPage() {
           router.push("/create-school");
           return;
         }
-        setMemberships(data.memberships);
+        if (!cancelled) setMemberships(data.memberships);
       } catch {
-        router.push("/sign-in");
+        if (!cancelled) setLoadError("Something went wrong. Check your connection and try again.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     fetchMemberships();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   const handleSelect = async (membership: MembershipInfo) => {
@@ -54,6 +65,23 @@ export default function SelectSchoolPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="w-full max-w-md text-center space-y-4">
+          <p className="text-red-600 text-sm">{loadError}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm hover:border-blue-400"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }

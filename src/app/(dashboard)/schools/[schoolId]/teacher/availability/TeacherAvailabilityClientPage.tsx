@@ -79,6 +79,15 @@ const TeacherAvailabilityClientPage = ({
     }
   };
 
+  const modalFormData = currentSlot
+    ? {
+        ...currentSlot,
+        startTime: currentSlot.startTime.toISOString(),
+        endTime: currentSlot.endTime.toISOString(),
+        notes: currentSlot.notes ?? "",
+      }
+    : undefined;
+
   return (
     <div className="p-4 md:p-6 bg-gray-50 min-h-screen">
       <header className="mb-6 md:mb-8 flex flex-col sm:flex-row justify-between items-center">
@@ -96,7 +105,7 @@ const TeacherAvailabilityClientPage = ({
          <div className="text-center py-10 px-6 bg-white rounded-lg shadow">
             <Info size={48} className="mx-auto text-gray-400 mb-4" />
             <h3 className="text-xl font-semibold text-gray-700 mb-2">No Availability Set</h3>
-            <p className="text-gray-500">You haven't added any availability slots yet. Click "Add Availability" to get started.</p>
+            <p className="text-gray-500">You haven&apos;t added any availability slots yet. Click &quot;Add Availability&quot; to get started.</p>
         </div>
       )}
 
@@ -158,12 +167,15 @@ const TeacherAvailabilityClientPage = ({
 
       {isModalOpen && (
         <FormModal 
+            table="teacher"
+            type="create"
+            authUser={null}
             isOpen={isModalOpen} 
             onClose={closeModal} 
         >
           <TeacherAvailabilityForm
             type={modalType}
-            data={currentSlot ?? undefined} 
+            data={modalFormData} 
             onClose={closeModal}
           />
         </FormModal>

@@ -1,4 +1,5 @@
 import { getServerUser } from "@/lib/auth";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import prisma from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import GradingScaleClient from "./GradingScaleClient";
@@ -16,7 +17,7 @@ export default async function GradingScaleAdminPage({
   }
 
   const isAdminOfSchool =
-    user.role === "admin" && user.schoolId === schoolId;
+    user.role === "admin" && (await assertSchoolAccessForServerUser(user, schoolId));
   const isSystemAdmin = user.role === "system_admin";
 
   if (!isAdminOfSchool && !isSystemAdmin) {

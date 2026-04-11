@@ -29,35 +29,48 @@ export async function GET(request: NextRequest) {
       membershipId: decodedUser.membershipId,
     };
 
-    if (authUser.schoolId && typeof authUser.schoolId === 'string' && !authUser.profileId) {
+    if (!authUser.profileId && authUser.role !== 'system_admin') {
       if (authUser.role === 'teacher') {
         const teacherProfile = await prisma.teacher.findFirst({
-          where: { authId: authUser.id, schoolId: authUser.schoolId },
+          where: { authId: authUser.id },
           select: { id: true },
         });
         if (teacherProfile) authUser.profileId = teacherProfile.id;
       } else if (authUser.role === 'student') {
         const studentProfile = await prisma.student.findFirst({
-          where: { authId: authUser.id, schoolId: authUser.schoolId },
+          where: { authId: authUser.id },
           select: { id: true },
         });
         if (studentProfile) authUser.profileId = studentProfile.id;
+      } else if (authUser.role === 'admin') {
+        const a = await prisma.admin.findFirst({ where: { authId: authUser.id }, select: { id: true } });
+        if (a) authUser.profileId = a.id;
+      } else if (authUser.role === 'parent') {
+        const p = await prisma.parent.findFirst({ where: { authId: authUser.id }, select: { id: true } });
+        if (p) authUser.profileId = p.id;
       }
     }
 
     const memberships = await prisma.schoolMembership.findMany({
       where: { authId: authUser.id, isActive: true },
-      include: { school: { select: { name: true } } },
+      include: {
+        school: { select: { name: true } },
+        admin: { select: { id: true } },
+        teacher: { select: { id: true } },
+        student: { select: { id: true } },
+        parent: { select: { id: true } },
+      },
     });
 
     return NextResponse.json({
       ...authUser,
-      memberships: memberships.map(m => ({
+      memberships: memberships.map((m) => ({
         id: m.id,
         schoolId: m.schoolId,
         schoolName: m.school.name,
         role: m.role,
         isActive: m.isActive,
+        profileId: m.admin?.id ?? m.teacher?.id ?? m.student?.id ?? m.parent?.id ?? undefined,
       })),
     });
   } catch (error) {

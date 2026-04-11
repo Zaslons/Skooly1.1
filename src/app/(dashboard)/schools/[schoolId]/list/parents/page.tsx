@@ -7,6 +7,7 @@ import { ITEM_PER_PAGE } from "@/lib/settings";
 import { Parent, Prisma, Student } from "@prisma/client";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 
 type ParentList = Parent & { students: Student[] };
 
@@ -24,7 +25,7 @@ const ParentListPage = async ({
     return <div>User not authenticated. Please sign in.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return (
       <div className="bg-white p-4 rounded-md flex-1 m-4 mt-0">
         <h1 className="text-xl font-semibold text-red-600">Access Denied</h1>

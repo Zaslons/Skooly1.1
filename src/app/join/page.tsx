@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 
 type Step = 'code' | 'form';
 
@@ -14,7 +14,6 @@ interface JoinCodeInfo {
 
 export default function JoinPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [step, setStep] = useState<Step>('code');
   const [code, setCode] = useState('');
   const [codeInfo, setCodeInfo] = useState<JoinCodeInfo | null>(null);
@@ -22,11 +21,12 @@ export default function JoinPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const urlCode = searchParams.get('code');
+    const params = new URLSearchParams(window.location.search);
+    const urlCode = params.get('code');
     if (urlCode) {
       setCode(urlCode.toUpperCase());
     }
-  }, [searchParams]);
+  }, []);
 
   const [parentForm, setParentForm] = useState({
     name: '', surname: '', email: '', phone: '', address: '', username: '', password: '',

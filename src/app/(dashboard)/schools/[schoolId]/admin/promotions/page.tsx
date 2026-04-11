@@ -1,5 +1,6 @@
 import prisma from '@/lib/prisma';
 import { getServerUser } from '@/lib/auth';
+import { assertSchoolAccessForServerUser } from '@/lib/schoolAccess';
 import { redirect } from 'next/navigation';
 import PromotionsClient from './PromotionsClient';
 
@@ -7,7 +8,7 @@ export default async function PromotionsPage({ params }: { params: { schoolId: s
   const { schoolId } = await params;
   const user = await getServerUser();
 
-  if (!user || (user.role !== 'admin' && user.role !== 'system_admin') || user.schoolId !== schoolId) {
+  if (!user || (user.role !== 'admin' && user.role !== 'system_admin') || !(await assertSchoolAccessForServerUser(user, schoolId))) {
     redirect('/');
   }
 

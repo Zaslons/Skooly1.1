@@ -3,20 +3,22 @@ import Link from "next/link";
 import { CalendarCheck, CalendarX, User } from "lucide-react";
 import Image from "next/image";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser, getActiveSchoolIdsForUser } from "@/lib/schoolAccess";
+import ParentFilteredLayout from "@/components/parent/ParentFilteredLayout";
 
 export default async function ParentAttendancePage({ 
     params
 }: {
-    params: { schoolId: string }
+    params: Promise<{ schoolId: string }>
 }) {
-  const { schoolId } = params;
+  const { schoolId } = await params;
   const authUser = await getVerifiedAuthUser();
 
   if (!authUser) {
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -24,25 +26,28 @@ export default async function ParentAttendancePage({
     return <div>Access Denied: This page is for parents only.</div>;
   }
 
-  // Get the parent's children with basic attendance stats, ensuring parent belongs to the school
+  const allowedSchoolIds = await getActiveSchoolIdsForUser(authUser.id, "parent");
+  const schoolIdsForStudents = allowedSchoolIds.length > 0 ? allowedSchoolIds : [schoolId];
+
   const parent = await prisma.parent.findUnique({
     where: {
       authId: authUser.id,
     },
     include: {
       students: {
-        where: { schoolId: schoolId },
+        where: { schoolId: { in: schoolIdsForStudents } },
         include: {
           attendances: true,
           class: true,
           grade: true,
+          school: { select: { name: true } },
         },
       },
     },
   });
 
   if (!parent) {
-    return <div className="p-4">Parent profile not found for the authenticated user in this school.</div>;
+    return <div className="p-4">Parent profile not found.</div>;
   }
 
   // Calculate attendance statistics for each child
@@ -65,6 +70,14 @@ export default async function ParentAttendancePage({
     };
   });
 
+  const distinctSchools = new Set(childrenWithStats.map((c) => c.school.name));
+  const showSchoolInChips = distinctSchools.size > 1;
+  const attendanceFilterOptions = childrenWithStats.map((c) => ({
+    id: c.id,
+    label: `${c.name} ${c.surname}`,
+    sublabel: showSchoolInChips ? c.school.name : undefined,
+  }));
+
   return (
     <div className="p-4">
       <div className="mb-6">
@@ -79,9 +92,16 @@ export default async function ParentAttendancePage({
           <p className="text-gray-600">No children found</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {childrenWithStats.map(child => (
-            <div key={child.id} className="bg-white rounded-lg shadow overflow-hidden">
+        <ParentFilteredLayout
+          filterOptions={attendanceFilterOptions}
+          contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        >
+          {childrenWithStats.map((child) => (
+            <div
+              key={child.id}
+              className="bg-white rounded-lg shadow overflow-hidden"
+              {...{ "data-student-filter-id": child.id }}
+            >
               <div className="p-4 border-b">
                 <div className="flex items-center">
                   {child.img ? (
@@ -98,9 +118,12 @@ export default async function ParentAttendancePage({
                     </div>
                   )}
                   <div>
+                    <p className="text-xs font-medium text-indigo-600 uppercase tracking-wide">
+                      {child.school.name}
+                    </p>
                     <h2 className="font-semibold text-lg">{`${child.name} ${child.surname}`}</h2>
                     <p className="text-sm text-gray-600">
-                      Grade {child.grade.level}, Class {child.class.name}
+                      Grade {child.grade?.level ?? "—"}, Class {child.class?.name ?? "—"}
                     </p>
                   </div>
                 </div>
@@ -140,7 +163,7 @@ export default async function ParentAttendancePage({
                 </div>
 
                 <Link
-                  href={`/schools/${schoolId}/parent/attendance/${child.id}`}
+                  href={`/schools/${child.schoolId}/parent/attendance/${child.id}`}
                   className="w-full block text-center p-2 bg-blue-600 text-white rounded font-medium text-sm hover:bg-blue-700 transition-colors"
                 >
                   View Detailed Attendance
@@ -148,8 +171,8 @@ export default async function ParentAttendancePage({
               </div>
             </div>
           ))}
-        </div>
+        </ParentFilteredLayout>
       )}
     </div>
   );
-} 
+}

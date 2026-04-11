@@ -1,6 +1,7 @@
 import Announcements from "@/components/Announcements";
-import BigCalendarContainer from "@/components/BigCalendarContainer";
+import TeacherMergedPeriodGrid from "@/components/scheduling/period-grid/TeacherMergedPeriodGrid";
 import { getVerifiedAuthUser } from "@/lib/actions";
+import { assertSchoolAccessForServerUser } from "@/lib/schoolAccess";
 import prisma from "@/lib/prisma";
 import { getClassAcademicSummary } from "@/lib/gradeCalculation";
 
@@ -16,7 +17,7 @@ const TeacherPage = async ({
     return <div>User not authenticated.</div>;
   }
 
-  if (authUser.schoolId !== schoolId) {
+  if (!(await assertSchoolAccessForServerUser(authUser, schoolId))) {
     return <div>Access Denied: You are not authorized for this school.</div>;
   }
 
@@ -24,13 +25,24 @@ const TeacherPage = async ({
     return <div>Access Denied: This page is for teachers only.</div>;
   }
 
+  const teacherProfileId = authUser.profileId;
+  if (!teacherProfileId) {
+    return <div className="p-4">Teacher profile could not be resolved. Please sign in again or contact support.</div>;
+  }
+
+  const schoolRow = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: { name: true },
+  });
+  const gridSchoolName = schoolRow?.name ?? "this school";
+
   const activeAY = await prisma.academicYear.findFirst({
     where: { schoolId, isArchived: false },
     orderBy: { startDate: 'desc' },
   });
 
   const teacherClasses = await prisma.lesson.findMany({
-    where: { teacherId: authUser.id, schoolId },
+    where: { teacherId: teacherProfileId, schoolId },
     select: { classId: true, class: { select: { id: true, name: true, academicYearId: true } } },
     distinct: ['classId'],
   });
@@ -40,6 +52,11 @@ const TeacherPage = async ({
     .map(l => l.class!);
 
   const classPerformance: { className: string; classAvg: number; studentCount: number; struggling: { name: string; avg: number }[] }[] = [];
+  const periods = await prisma.period.findMany({
+    where: { schoolId, isArchived: false },
+    select: { id: true, name: true, order: true, startTime: true, endTime: true },
+    orderBy: [{ order: "asc" }, { name: "asc" }],
+  });
 
   if (activeAY) {
     for (const cls of uniqueClasses) {
@@ -103,13 +120,11 @@ const TeacherPage = async ({
 
         <div className="bg-white p-4 rounded-md">
           <h1 className="text-xl font-semibold">Schedule</h1>
-          {authUser && (
-            <BigCalendarContainer
-              type="teacherId"
-              id={authUser.id}
-              schoolId={schoolId}
-            />
-          )}
+          <TeacherMergedPeriodGrid
+            periods={periods}
+            gridSchoolName={gridSchoolName}
+            fullScheduleHref={`/schools/${schoolId}/teacher/my-schedule`}
+          />
         </div>
       </div>
       <div className="w-full xl:w-1/3 flex flex-col gap-8">

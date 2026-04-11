@@ -151,7 +151,7 @@ const BulkImportCard: React.FC<BulkImportCardProps> = ({
 
             {parsedData.length > 0 && (
                 <div className="flex flex-col items-start gap-4"> {/* Changed alignment */}
-                    <p className="text-sm font-medium">Previewing {parsedData.length} records from "{file?.name}". Ready to submit.</p>
+                    <p className="text-sm font-medium">Previewing {parsedData.length} records from &quot;{file?.name}&quot;. Ready to submit.</p>
                     <button
                         onClick={handleSubmit}
                         disabled={isSubmitting || isParsing}

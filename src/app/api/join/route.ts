@@ -210,11 +210,14 @@ async function handleParentStudentJoin(body: any, joinCode: any) {
     return { parentAuth, parentMembership };
   });
 
-  const authResult = await authenticateUser(result.parentAuth.id);
+  const authResult = await authenticateUser(parentData.username, parentData.password);
+  if (!authResult) {
+    return NextResponse.json({ error: 'Account created but automatic sign-in failed.' }, { status: 500 });
+  }
 
   const cookieStore = await cookies();
   if (authResult.token) {
-    cookieStore.set('token', authResult.token, {
+    cookieStore.set('auth_token', authResult.token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -309,11 +312,14 @@ async function handleTeacherJoin(body: any, joinCode: any) {
     return { teacherAuth, membership };
   });
 
-  const authResult = await authenticateUser(result.teacherAuth.id);
+  const authResult = await authenticateUser(teacherData.username, teacherData.password);
+  if (!authResult) {
+    return NextResponse.json({ error: 'Account created but automatic sign-in failed.' }, { status: 500 });
+  }
 
   const cookieStore = await cookies();
   if (authResult.token) {
-    cookieStore.set('token', authResult.token, {
+    cookieStore.set('auth_token', authResult.token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -429,11 +435,14 @@ async function handleParentLinkJoin(body: any, joinCode: any) {
     return { parentAuth };
   });
 
-  const authResult = await authenticateUser(result.parentAuth.id);
+  const authResult = await authenticateUser(parentData.username, parentData.password);
+  if (!authResult) {
+    return NextResponse.json({ error: 'Account created but automatic sign-in failed.' }, { status: 500 });
+  }
 
   const cookieStore = await cookies();
   if (authResult.token) {
-    cookieStore.set('token', authResult.token, {
+    cookieStore.set('auth_token', authResult.token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
