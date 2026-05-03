@@ -38,7 +38,7 @@ async function checkOverlappingAcademicYears(schoolId: string, startDate: Date, 
 
 export async function createAcademicYearAction(data: CreateAcademicYearData) {
   const currentUser = await getServerUser(); 
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return {
       ...schedulingActionFailure("FORBIDDEN", "You are not authorized to perform this action."),
     };
@@ -168,7 +168,7 @@ export async function updateAcademicYearAction(academicYearId: string, data: Upd
   }
 
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== existingAcademicYear.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, existingAcademicYear.schoolId))) {
     return { success: false, message: "You are not authorized to perform this action." };
   }
 
@@ -233,7 +233,7 @@ export async function archiveAcademicYearAction(academicYearId: string) {
     return { success: false, message: "Academic Year not found." };
   }
 
-  if (currentUser.schoolId !== academicYearToArchive.schoolId || currentUser.role !== 'admin') {
+  if (currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, academicYearToArchive.schoolId))) {
     return { success: false, message: "You are not authorized to archive this academic year." };
   }
 
@@ -286,7 +286,7 @@ export async function unarchiveAcademicYearAction(academicYearId: string) {
     return { success: false, message: "Academic Year not found." };
   }
 
-  if (currentUser.schoolId !== academicYearToUnarchive.schoolId || currentUser.role !== 'admin') {
+  if (currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, academicYearToUnarchive.schoolId))) {
     return { success: false, message: "You are not authorized to unarchive this academic year." };
   }
 

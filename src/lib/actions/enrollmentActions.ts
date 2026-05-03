@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { getServerUser } from '@/lib/auth';
+import { userHasSchoolAccess } from '@/lib/schoolAccess';
 
 const EnrollStudentSchema = z.object({
   schoolId: z.string().cuid({ message: 'Valid School ID is required.' }),
@@ -23,7 +24,7 @@ export interface EnrollStudentData {
 
 export async function enrollStudentAction(data: EnrollStudentData) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return { success: false, message: 'Unauthorized: You do not have permission to enroll students.' };
   }
 
@@ -120,7 +121,7 @@ export interface UnenrollStudentData {
 
 export async function unenrollStudentAction(data: UnenrollStudentData) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return { success: false, message: 'Unauthorized: You do not have permission to unenroll students.' };
   }
 
@@ -189,7 +190,7 @@ export interface TransferStudentData {
 
 export async function transferStudentAction(data: TransferStudentData) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 

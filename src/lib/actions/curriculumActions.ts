@@ -43,7 +43,7 @@ export interface CreateCurriculumData {
 
 export async function createCurriculumAction(data: CreateCurriculumData) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return { success: false, message: 'Unauthorized: You do not have permission to create curriculum entries for this school.' };
   }
 
@@ -200,7 +200,7 @@ export async function updateCurriculumAction(curriculumId: string, data: UpdateC
   }
 
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== curriculumToUpdate.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, curriculumToUpdate.schoolId))) {
     return { success: false, message: 'Unauthorized: You do not have permission to update this curriculum entry.' };
   }
 

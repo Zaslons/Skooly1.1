@@ -41,7 +41,7 @@ export async function savePromotionRulesAction(data: {
   borderlineMargin: number;
 }) {
   const user = await getServerUser();
-  if (!user || user.role !== 'admin' || user.schoolId !== data.schoolId) {
+  if (!user || user.role !== 'admin' || !(await userHasSchoolAccess(user, data.schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 
@@ -186,7 +186,7 @@ export async function applyPromotionsAction(data: {
   decisions: { studentId: string; decision: PromotionDecision; targetClassId?: number }[];
 }) {
   const user = await getServerUser();
-  if (!user || user.role !== 'admin' || user.schoolId !== data.schoolId) {
+  if (!user || user.role !== 'admin' || !(await userHasSchoolAccess(user, data.schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 
