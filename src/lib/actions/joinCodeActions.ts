@@ -20,7 +20,7 @@ export async function createJoinCodeAction(data: {
   expiresInDays?: number;
 }) {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.schoolId !== data.schoolId || currentUser.role !== 'admin') {
+  if (!currentUser || currentUser.role !== 'admin' || !(await userHasSchoolAccess(currentUser, data.schoolId))) {
     return { success: false, message: 'Unauthorized.' };
   }
 

@@ -41,7 +41,7 @@ type UpdateTermInput = {
 
 export async function createTermAction(input: CreateTermInput): Promise<TermActionState> {
   const currentUser = await getServerUser();
-  if (!currentUser || currentUser.role !== "admin" || currentUser.schoolId !== input.schoolId) {
+  if (!currentUser || currentUser.role !== "admin" || !(await userHasSchoolAccess(currentUser, input.schoolId))) {
     return { success: false, message: "You are not authorized to perform this action.", code: "FORBIDDEN" };
   }
 
