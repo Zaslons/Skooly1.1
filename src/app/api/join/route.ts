@@ -376,6 +376,16 @@ async function handleParentLinkJoin(body: any, joinCode: any) {
     return NextResponse.json({ error: 'Student not found.' }, { status: 400 });
   }
 
+  if (student.parentId) {
+    return NextResponse.json(
+      {
+        error:
+          'This student already has a parent account linked. Contact the school if you need help.',
+      },
+      { status: 409 }
+    );
+  }
+
   const existing = await prisma.auth.findFirst({
     where: { OR: [{ email: parentData.email }, { username: parentData.username }] },
   });

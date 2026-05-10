@@ -59,10 +59,17 @@ export async function deactivateJoinCodeAction(joinCodeId: string, schoolId: str
   }
 
   try {
-    await prisma.joinCode.update({
-      where: { id: joinCodeId },
+    const result = await prisma.joinCode.updateMany({
+      where: { id: joinCodeId, schoolId },
       data: { isActive: false },
     });
+
+    if (result.count === 0) {
+      return {
+        success: false,
+        message: 'Join code not found in this school or already deactivated.',
+      };
+    }
 
     revalidatePath(`/schools/${schoolId}/admin/join-codes`);
     return { success: true, message: 'Join code deactivated.' };
