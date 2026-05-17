@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { hashPassword, authenticateUser } from '@/lib/auth';
+import { hasRegisteredParentContact } from '@/lib/join/parentLinkEligibility';
 import { z } from 'zod';
 import { cookies } from 'next/headers';
 
@@ -369,11 +370,35 @@ async function handleParentLinkJoin(body: any, joinCode: any) {
 
   const student = await prisma.student.findUnique({
     where: { id: joinCode.studentId },
-    select: { id: true, parentId: true },
+    select: {
+      id: true,
+      parentId: true,
+      schoolId: true,
+      parent: { select: { email: true, auth: { select: { email: true } } } },
+    },
   });
 
   if (!student) {
     return NextResponse.json({ error: 'Student not found.' }, { status: 400 });
+  }
+
+  if (student.schoolId !== schoolId) {
+    return NextResponse.json({ error: 'Student does not belong to this school.' }, { status: 400 });
+  }
+
+  if (
+    hasRegisteredParentContact({
+      parentEmail: student.parent?.email,
+      authEmail: student.parent?.auth.email,
+    })
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          'This student is already linked to a parent account with a registered email. Use class enrollment or ask an administrator instead of a parent link.',
+      },
+      { status: 409 }
+    );
   }
 
   const existing = await prisma.auth.findFirst({
